@@ -8,15 +8,20 @@ from apps.admin_management.models.notification import Notification # 🚀 导入
 # 引入 Models
 from apps.diet.models.mongo.recipe import Recipe as MongoRecipe
 from apps.diet.models.mongo.restaurant import Restaurant # 👈 确保这个也导入了
-from apps.diet.models.mysql.gamification import ChallengeTask, Remedy
+from apps.diet.models.mysql.gamification import ChallengeTask, Remedy, Achievement
 from apps.admin_management.serializers.business_s import ChallengeTaskSerializer, RemedySerializer
-
+from apps.diet.models.mongo.community import CommunityFeed, Comment
 
 # 引入 Serializer (这是本次报错的核心)
 from apps.admin_management.serializers.business_s import (
     AdminUserSerializer, 
     MongoRecipeAuditSerializer,
-    MongoRestaurantSerializer # 🚀 补上这一行
+    MongoRestaurantSerializer,
+    ChallengeTaskSerializer,
+    RemedySerializer,
+    AchievementSerializer,           # 🚀 新增
+    MongoCommunityFeedSerializer,    # 🚀 新增
+    MongoCommentSerializer           # 🚀 新增
 )
 from apps.admin_management.permissions import RBACPermission
 
@@ -254,3 +259,91 @@ class RemedyViewSet(viewsets.ModelViewSet):
         'partial_update': 'business:remedy:edit',
         'destroy': 'business:remedy:delete',
     }        
+
+
+
+class AchievementViewSet(viewsets.ModelViewSet):
+    """
+    成就字典管理
+    """
+    queryset = Achievement.objects.all().order_by('-id')
+    serializer_class = AchievementSerializer
+    permission_classes = [IsAuthenticated, IsAdminUser, RBACPermission]
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        keyword = self.request.query_params.get('search', '')
+        if keyword:
+            qs = qs.filter(title__icontains=keyword) | qs.filter(code__icontains=keyword)
+        return qs
+
+    perms_map = {
+        'list': 'business:achievement:list',
+        'create': 'business:achievement:add',
+        'update': 'business:achievement:edit',
+        'partial_update': 'business:achievement:edit',
+        'destroy': 'business:achievement:delete',
+    }
+
+class CommunityFeedViewSet(viewsets.ViewSet):
+    """
+    社区动态审核/管理 (MongoDB)
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser, RBACPermission]
+    perms_map = {
+        'list': 'business:feed:list',
+        'destroy': 'business:feed:delete',  # 管理员直接删除违规帖子
+    }
+
+    def list(self, request):
+        query = request.query_params.get('search', '')
+        if query:
+            queryset = CommunityFeed.objects(content__icontains=query)
+        else:
+            queryset = CommunityFeed.objects.all()
+            
+        queryset = queryset.order_by('-created_at')[:50]
+        serializer = MongoCommunityFeedSerializer(queryset, many=True)
+        return Response({"code": 200, "data": serializer.data})
+
+    def destroy(self, request, pk=None):
+        try:
+            obj = CommunityFeed.objects.get(id=ObjectId(pk))
+            obj.delete() # Comment 设置了 cascade，关联评论会自动删除
+            return Response({"code": 200, "msg": "违规动态删除成功"})
+        except Exception:
+            return Response({"code": 404, "msg": "动态不存在"})
+
+class CommentViewSet(viewsets.ViewSet):
+    """
+    社区评论审核/管理 (MongoDB)
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser, RBACPermission]
+    perms_map = {
+        'list': 'business:comment:list',
+        'destroy': 'business:comment:delete',
+    }
+
+    def list(self, request):
+        query = request.query_params.get('search', '')
+        if query:
+            queryset = Comment.objects(content__icontains=query)
+        else:
+            queryset = Comment.objects.all()
+            
+        queryset = queryset.order_by('-created_at')[:50]
+        serializer = MongoCommentSerializer(queryset, many=True)
+        return Response({"code": 200, "data": serializer.data})
+
+    def destroy(self, request, pk=None):
+        try:
+            obj = Comment.objects.get(id=ObjectId(pk))
+            
+            # 手动扣减动态的评论数
+            if obj.feed_id:
+                obj.feed_id.update(dec__comments_count=1)
+                
+            obj.delete()
+            return Response({"code": 200, "msg": "违规评论删除成功"})
+        except Exception:
+            return Response({"code": 404, "msg": "评论不存在"})

@@ -132,3 +132,54 @@ class AIService:
         except Exception as e:
             print(f"❌ AI Advice Error: {e}")
             return "AI 营养师正在思考人生，请稍后再试。"
+        
+
+
+    @staticmethod
+    def generate_real_time_advice(context):
+        prompt = f"""
+        作为专业AI私人营养师，请根据用户的当前上下文提供一条实时饮食或健康建议。
+        用户上下文信息：{context}
+        要求：
+        1. 语气亲切、专业、具有鼓励性。
+        2. 简明扼要，控制在50字左右，直接给出结论。
+        """
+        try:
+            client = AIService.get_client()
+            response = client.chat.completions.create(
+                model=settings.SILICONFLOW_MODEL,
+                messages=[
+                    {"role": "system", "content": "你是一位专业的健康和营养顾问。"},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=100
+            )
+            return {"advice": response.choices[0].message.content.strip()}
+        except Exception as e:
+            return {"error": f"实时建议生成失败: {str(e)}"}
+
+    # [新增] AI 智能问答 (支持多轮上下文拼接)
+    @staticmethod
+    def chat_with_ai(question, context_messages=None):
+        if context_messages is None:
+            context_messages = []
+            
+        # 1. 植入系统基础人设
+        messages = [{"role": "system", "content": "你是一位专业的私人营养师，请为用户解答健康、饮食和运动方面的问题。"}]
+        
+        # 2. 追加历史上下文记录 (需前端传入 [{"role": "user/assistant", "content": "..."}] 格式)
+        messages.extend(context_messages)
+        
+        # 3. 追加当前用户的最新提问
+        messages.append({"role": "user", "content": question})
+
+        try:
+            client = AIService.get_client()
+            response = client.chat.completions.create(
+                model=settings.SILICONFLOW_MODEL,
+                messages=messages,
+                max_tokens=800
+            )
+            return {"answer": response.choices[0].message.content.strip()}
+        except Exception as e:
+            return {"error": f"AI问答交互失败: {str(e)}"}        

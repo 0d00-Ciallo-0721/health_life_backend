@@ -2,7 +2,7 @@ from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from apps.users.models import Profile
 from apps.diet.models.mongo.restaurant import Restaurant 
-from apps.diet.models.mysql.gamification import ChallengeTask, Remedy
+from apps.diet.models.mysql.gamification import ChallengeTask, Remedy, Achievement
 
 User = get_user_model()
 
@@ -111,5 +111,36 @@ class RemedySerializer(serializers.ModelSerializer):
         fields = ['id', 'scenario', 'scenario_display', 'title', 'desc', 'order']    
 
 
+# --- 5. 成就字典管理 (MySQL) ---
+class AchievementSerializer(serializers.ModelSerializer):
+    """成就字典管理序列化器"""
+    class Meta:
+        model = Achievement
+        fields = '__all__'
 
 
+# --- 6. 社区内容审核 (MongoDB) ---
+class MongoCommunityFeedSerializer(serializers.Serializer):
+    """社区动态序列化器 (后台查看/审核用)"""
+    id = serializers.CharField(read_only=True)
+    user_id = serializers.IntegerField()
+    content = serializers.CharField()
+    images = serializers.ListField(child=serializers.CharField(), required=False)
+    feed_type = serializers.CharField()
+    likes_count = serializers.IntegerField()
+    comments_count = serializers.IntegerField()
+    created_at = serializers.DateTimeField(read_only=True)
+
+class MongoCommentSerializer(serializers.Serializer):
+    """社区评论序列化器 (后台查看/审核用)"""
+    id = serializers.CharField(read_only=True)
+    user_id = serializers.IntegerField()
+    content = serializers.CharField()
+    created_at = serializers.DateTimeField(read_only=True)
+    
+    # 提取关联的帖子 ID
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        # 兼容 ReferenceField 对象取值
+        data['feed_id'] = str(instance.feed_id.id) if instance.feed_id else None
+        return data

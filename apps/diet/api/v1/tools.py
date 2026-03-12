@@ -9,6 +9,10 @@ from apps.diet.domains.tools.ai_service import AIService
 from apps.diet.models import DailyIntake
 from apps.users.models import Profile
 
+from django.core.files.storage import default_storage
+import uuid
+import os
+
 class AIFoodRecognitionView(APIView):
     """拍图识热量"""
     permission_classes = [IsAuthenticated]
@@ -54,3 +58,66 @@ class AINutritionistView(APIView):
                 "today_calories": total_calories
             }
         })
+    
+
+
+# [新增] AI 实时建议视图
+class AIRealTimeAdviceView(APIView):
+    """实时建议"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        context_data = request.data.get("context", "")
+        res = AIService.generate_real_time_advice(context_data)
+        
+        if "error" in res:
+            return Response({"code": 500, "msg": res['error']}, status=500)
+            
+        return Response({"code": 200, "msg": "success", "data": res})
+
+# [新增] AI 智能问答视图
+class AIChatView(APIView):
+    """智能问答 (多轮对话)"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        question = request.data.get("question")
+        if not question:
+            return Response({"code": 400, "msg": "问题不能为空"}, status=400)
+            
+        # 接收前端传递的上下文数组
+        context_messages = request.data.get("context", [])
+        
+        res = AIService.chat_with_ai(question, context_messages)
+        if "error" in res:
+            return Response({"code": 500, "msg": res['error']}, status=500)
+            
+        return Response({"code": 200, "msg": "success", "data": res})
+
+# [新增] AI 附件上传视图
+class AIAttachmentUploadView(APIView):
+    """AI 附件/体检单等上传"""
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        upload_file = request.FILES.get('file')
+        if not upload_file:
+            return Response({"code": 400, "msg": "请上传文件"}, status=400)
+            
+        custom_name = request.data.get('name', upload_file.name)
+        
+        # 存储文件到媒体库 (ai_uploads/ 目录下)
+        ext = os.path.splitext(upload_file.name)[1]
+        filename = f"ai_uploads/{uuid.uuid4().hex}{ext}"
+        saved_path = default_storage.save(filename, upload_file)
+        file_url = default_storage.url(saved_path)
+        
+        # 返回前端约定的格式
+        data = {
+            "url": file_url,
+            "name": custom_name,
+            "mime_type": upload_file.content_type,
+            "size": upload_file.size
+        }
+        return Response({"code": 200, "msg": "success", "data": data})    

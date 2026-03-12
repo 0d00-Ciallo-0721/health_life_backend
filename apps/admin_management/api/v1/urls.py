@@ -7,8 +7,11 @@ from .business import (
     UserManageViewSet, 
     RecipeAuditViewSet, 
     RestaurantViewSet,
-    ChallengeTaskViewSet, # 🚀 导入
-    RemedyViewSet         # 🚀 导入
+    ChallengeTaskViewSet, 
+    RemedyViewSet,
+    AchievementViewSet,   # 🚀 新增
+    CommunityFeedViewSet, # 🚀 新增
+    CommentViewSet        # 🚀 新增
 )
 from .system import (
     CurrentUserMenuView, 
@@ -33,6 +36,10 @@ router.register(r'business/recipes', RecipeAuditViewSet, basename='biz_recipe')
 router.register(r'business/restaurants', RestaurantViewSet, basename='biz_restaurant')
 router.register(r'business/tasks', ChallengeTaskViewSet, basename='biz_task')
 router.register(r'business/remedies', RemedyViewSet, basename='biz_remedy')
+router.register(r'business/achievements', AchievementViewSet, basename='biz_achievement')
+router.register(r'business/feeds', CommunityFeedViewSet, basename='biz_feed')
+router.register(r'business/comments', CommentViewSet, basename='biz_comment')
+
 
 urlpatterns = [
     path('auth/login/', AdminLoginView.as_view(), name='admin_login'),

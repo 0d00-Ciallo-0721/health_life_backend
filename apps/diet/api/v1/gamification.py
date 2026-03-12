@@ -5,6 +5,9 @@ from django.utils import timezone
 from django.db.models import Sum
 import datetime
 
+from apps.diet.models.mysql.gamification import ChallengeTask, Remedy, UserChallengeProgress, UserRemedyPlan, Achievement, UserAchievement
+from apps.diet.domains.gamification.services import GamificationService
+
 from apps.diet.models import ChallengeTask, Remedy, DailyIntake
 
 class ChallengeTaskView(APIView):
@@ -93,3 +96,125 @@ class CarbonFootprintView(APIView):
                 "equivalent_trees": trees
             }
         })
+    
+
+
+# [新增] 加入挑战视图
+class ChallengeJoinView(APIView):
+    """加入挑战: POST /diet/challenge/tasks/{challengeId}/join/"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, challengeId):
+        res = GamificationService.join_challenge(request.user, challengeId)
+        if "error" in res:
+            return Response({"code": 400, "msg": res["error"]}, status=400)
+        return Response({"code": 200, "msg": "success", "data": res})
+
+# [新增] 我的挑战进度视图
+class ChallengeProgressView(APIView):
+    """我的挑战进度: GET /diet/challenge/progress/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        status = request.query_params.get('status', 'pending')
+        progresses = UserChallengeProgress.objects.filter(user=request.user, status=status).select_related('challenge')
+        
+        data = []
+        for p in progresses:
+            data.append({
+                "progress_id": p.id,
+                "challenge_id": p.challenge_id,
+                "title": p.challenge.title,
+                "status": p.status,
+                "progress": p.progress
+            })
+        return Response({"code": 200, "msg": "success", "data": data})
+
+# [新增] 检查/放弃挑战视图
+class ChallengeProgressActionView(APIView):
+    """更新进度 (打卡/放弃): POST /diet/challenge/progress/{progressId}/{action}/"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, progressId, action):
+        if action not in ['check', 'abandon']:
+            return Response({"code": 400, "msg": "非法操作"}, status=400)
+            
+        res = GamificationService.update_progress(request.user, progressId, action)
+        if "error" in res:
+            return Response({"code": 400, "msg": res["error"]}, status=400)
+        return Response({"code": 200, "msg": "success", "data": res})
+
+# [新增] 排行榜视图
+class LeaderboardView(APIView):
+    """获取排行榜: GET /diet/challenge/leaderboard/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        board_type = request.query_params.get('type', 'weekly')
+        scope = request.query_params.get('scope', 'global')
+        data = GamificationService.get_leaderboard(board_type, scope)
+        return Response({"code": 200, "msg": "success", "data": data})
+
+# [新增] 成就视图
+class AchievementView(APIView):
+    """我的成就列表: GET /diet/achievements/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        my_achievements = UserAchievement.objects.filter(user=request.user).values_list('achievement__code', flat=True)
+        all_achievements = Achievement.objects.all()
+        
+        data = []
+        for a in all_achievements:
+            data.append({
+                "code": a.code,
+                "title": a.title,
+                "desc": a.desc,
+                "unlocked": a.code in my_achievements
+            })
+        return Response({"code": 200, "msg": "success", "data": data})
+
+# [新增] 添加补救方案至计划视图
+class RemedyPlanActionView(APIView):
+    """加入补救计划: POST /diet/remedy/add-to-plan/"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        remedy_id = request.data.get('remedy_id')
+        if not remedy_id:
+            return Response({"code": 400, "msg": "缺少 remedy_id"}, status=400)
+            
+        try:
+            remedy = Remedy.objects.get(id=remedy_id)
+            UserRemedyPlan.objects.get_or_create(user=request.user, remedy=remedy)
+            return Response({"code": 200, "msg": "已加入今日补救计划"})
+        except Remedy.DoesNotExist:
+            return Response({"code": 404, "msg": "补救方案不存在"}, status=404)    
+        
+
+class CarbonWeeklyView(APIView):
+    """周碳足迹报告: GET /diet/carbon/footprint/weekly/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        # 这里接入具体的周统计逻辑，暂时返回默认结构
+        data = {
+            "total_saved": 15.4,  # kg
+            "trend": "down",
+            "daily_data": [{"date": start_date, "val": 2.1}]
+        }
+        return Response({"code": 200, "msg": "success", "data": data})
+
+class CarbonSuggestionView(APIView):
+    """环保建议: GET /diet/carbon/suggestions/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # 写死的规则策略 (后续可接大模型)
+        suggestions = [
+            {"title": "多吃植物蛋白", "desc": "今日肉类摄入较高，建议明后天尝试豆制品。"},
+            {"title": "光盘行动", "desc": "减少厨余垃圾能有效降低碳排放。"}
+        ]
+        return Response({"code": 200, "msg": "success", "data": suggestions})        

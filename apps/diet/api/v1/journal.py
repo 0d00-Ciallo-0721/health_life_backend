@@ -115,3 +115,36 @@ class WeightView(APIView):
         start = timezone.now().date() - datetime.timedelta(days=days)
         data = list(WeightRecord.objects.filter(user=request.user, date__gte=start).order_by('date').values('date', 'weight', 'bmi'))
         return Response({"code": 200, "data": {"records": data}})
+    
+
+# [新增] 今日运动统计视图
+class WorkoutStatsTodayView(APIView):
+    """今日运动统计"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # 调用 Service 层获取统计数据
+        stats = WorkoutService.get_today_stats(request.user)
+        return Response({"code": 200, "msg": "success", "data": stats})
+
+
+# [新增] 单次运动详情视图
+class WorkoutDetailView(APIView):
+    """单次运动详情"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, id):
+        # 调用 Service 层获取详情
+        record = WorkoutService.get_detail(request.user, id)
+        if not record:
+            return Response({"code": 404, "msg": "运动记录不存在"}, status=404)
+        
+        # 组装返回数据 (如需更复杂结构可使用 Serializer)
+        data = {
+            "id": record.id,
+            "type": record.type,
+            "duration": record.duration,
+            "calories_burned": record.calories_burned,
+            "date": record.date.strftime('%Y-%m-%d')
+        }
+        return Response({"code": 200, "msg": "success", "data": data})
