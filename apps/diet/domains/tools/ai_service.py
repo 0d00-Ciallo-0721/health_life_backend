@@ -183,3 +183,54 @@ class AIService:
             return {"answer": response.choices[0].message.content.strip()}
         except Exception as e:
             return {"error": f"AI问答交互失败: {str(e)}"}        
+        
+
+
+    # [新增] 食材智能识别 (专门用于冰箱录入)
+    @staticmethod
+    def recognize_ingredient(image_file):
+        """
+        识别基础食材并返回适合存入冰箱的结构化数据
+        """
+        try:
+            base64_image = encode_image_to_base64(image_file)
+        except Exception as e:
+            return {"error": f"图片编码异常: {str(e)}"}
+
+        if not base64_image:
+            return {"error": "图片处理失败(base64生成为空)"}
+
+        prompt = """
+        作为专业食材识别AI，请识别图片中的主要生鲜食材。
+        请只返回合法的JSON格式，不要有多余的文字、Markdown标记或解释。
+        
+        JSON返回结构必须如下：
+        {
+            "name": "食材名称(如西红柿、牛肉)",
+            "category": "食材分类(只能从以下枚举中选一：vegetable, fruit, meat, seafood, dairy, grain, seasoning, other)",
+            "amount_unit": "推荐的计量单位(如：个、克、升、把、条)"
+        }
+        """
+
+        try:
+            client = AIService.get_client()
+            response = client.chat.completions.create(
+                model=settings.SILICONFLOW_MODEL,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        ]
+                    }
+                ],
+                max_tokens=300
+            )
+            content = response.choices[0].message.content
+            cleaned = AIService._clean_json_response(content)
+            return json.loads(cleaned)
+        except json.JSONDecodeError:
+            return {"error": "AI返回的数据格式无法解析"}
+        except Exception as e:
+            return {"error": f"食材识别接口调用失败: {str(e)}"}

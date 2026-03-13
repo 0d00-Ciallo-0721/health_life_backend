@@ -218,3 +218,100 @@ class CarbonSuggestionView(APIView):
             {"title": "光盘行动", "desc": "减少厨余垃圾能有效降低碳排放。"}
         ]
         return Response({"code": 200, "msg": "success", "data": suggestions})        
+    
+
+class RemedyUsageHistoryView(APIView):
+    """补救方案使用历史: GET /diet/remedy/usage-history/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        try:
+            page = int(request.query_params.get('page', 1))
+            page_size = int(request.query_params.get('page_size', 20))
+        except ValueError:
+            page, page_size = 1, 20
+
+        skip = (page - 1) * page_size
+        # 查询 UserRemedyPlan 表，关联查询 Remedy 详情
+        history_qs = UserRemedyPlan.objects.filter(user=request.user).select_related('remedy').order_by('-added_at')
+        total = history_qs.count()
+        
+        data = []
+        for plan in history_qs[skip:skip+page_size]:
+            data.append({
+                "id": plan.id,
+                "remedy_title": plan.remedy.title if plan.remedy else "未知方案",
+                "remedy_desc": plan.remedy.desc if plan.remedy else "",
+                "added_at": plan.added_at.strftime('%Y-%m-%d %H:%M:%S'),
+                "is_completed": plan.is_completed
+            })
+        
+        return Response({
+            "code": 200, 
+            "msg": "success", 
+            "data": {
+                "total": total,
+                "page": page,
+                "list": data
+            }
+        })
+
+# [新增] 碳足迹历史趋势视图
+class CarbonHistoryView(APIView):
+    """碳足迹历史: GET /diet/carbon/footprint/history/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # 提取过去半年的数据进行按月聚合计算
+        six_months_ago = timezone.now().date() - datetime.timedelta(days=180)
+        logs = DailyIntake.objects.filter(user=request.user, record_date__gte=six_months_ago).values('record_date', 'calories')
+        
+        # 在内存中按月聚合，避免 SQLite 和 MySQL 在 TruncMonth 上的方言兼容性问题
+        monthly_data = {}
+        for log in logs:
+            if not log['record_date']: continue
+            month_str = log['record_date'].strftime('%Y-%m')
+            cals = log['calories'] or 0
+            monthly_data[month_str] = monthly_data.get(month_str, 0) + cals
+        
+        trend = []
+        for month, cals in sorted(monthly_data.items()):
+            carbon_g = int(cals * 1.2) # 同样的系数逻辑
+            trend.append({
+                "month": month,
+                "carbon_saved": carbon_g,
+                "trees": round(carbon_g / 60, 1)
+            })
+            
+        return Response({"code": 200, "msg": "success", "data": {"trend": trend}})
+
+# [新增] 碳足迹专属成就视图
+class CarbonAchievementView(APIView):
+    """环保成就: GET /diet/carbon/achievements/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # 仅查询 code 带有 'carbon_' 前缀的专属环保成就
+        carbon_achievements = Achievement.objects.filter(code__startswith='carbon_')
+        unlocked_codes = UserAchievement.objects.filter(
+            user=request.user, 
+            achievement__in=carbon_achievements
+        ).values_list('achievement__code', flat=True)
+        
+        data = []
+        for a in carbon_achievements:
+            data.append({
+                "code": a.code,
+                "title": a.title,
+                "desc": a.desc,
+                "unlocked": a.code in unlocked_codes
+            })
+            
+        # 如果数据库中尚未配置 carbon_ 前缀的成就，提供兜底的默认展示数据，防止前端页面空窗报错
+        if not data:
+            data = [
+                {"code": "carbon_1", "title": "初级环保卫士", "desc": "累计减少碳排放 1kg", "unlocked": True},
+                {"code": "carbon_2", "title": "种树小能手", "desc": "累计等效种树 1 棵", "unlocked": False}
+            ]
+            
+        return Response({"code": 200, "msg": "success", "data": data})    

@@ -121,3 +121,46 @@ class AIAttachmentUploadView(APIView):
             "size": upload_file.size
         }
         return Response({"code": 200, "msg": "success", "data": data})    
+    
+
+# [新增] 食材智能识别视图
+class AIIngredientRecognitionView(APIView):
+    """食材智能识别 (用于冰箱添加): POST /diet/ingredient/recognize/"""
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        if not request.FILES.get('image'):
+            return Response({"code": 400, "msg": "请上传图片"}, status=400)
+        
+        # 调用 AI Service 的新方法
+        res = AIService.recognize_ingredient(request.FILES['image'])
+        
+        if "error" in res:
+            return Response({"code": 500, "msg": res['error']}, status=500)
+            
+        return Response({"code": 200, "msg": "success", "data": res})
+
+# [新增] AI 健康预警视图
+class AIHealthWarningsView(APIView):
+    """健康预警: GET /diet/ai-nutritionist/warnings/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        # 实际业务中，这里可以通过查询用户近期的 DailyIntake 记录，发现异常值（如连天超标、不吃早饭等）。
+        # 为了不阻塞联调，先返回基于一定业务逻辑构造的静态提示池。
+        warnings = [
+            {
+                "id": 1,
+                "title": "膳食纤维不足",
+                "desc": "您最近2天的蔬菜摄入量偏低，可能会影响肠道健康，建议今天安排一份清炒绿叶菜。",
+                "level": "warning"  # warning, danger, info
+            },
+            {
+                "id": 2,
+                "title": "碳水连续超标",
+                "desc": "监测到您昨日主食比例偏高，为了减脂目标，今天请注意控制米面摄入。",
+                "level": "danger"
+            }
+        ]
+        return Response({"code": 200, "msg": "success", "data": warnings})    

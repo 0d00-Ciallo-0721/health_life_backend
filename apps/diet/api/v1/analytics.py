@@ -2,6 +2,9 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 import datetime
+from django.db.models import Sum
+from apps.diet.models.mysql.journal import WeightRecord, DailyIntake
+
 
 # 引入刚刚补全的 ReportService
 from apps.diet.domains.analytics.report_service import ReportService
@@ -13,10 +16,42 @@ class DailySummaryView(APIView):
     
     def get(self, request):
         d_str = request.query_params.get('date')
+        if d_str in ['undefined', 'null', '']:
+            d_str = None
         date = datetime.date.fromisoformat(d_str) if d_str else datetime.date.today()
+        
         data = ReportService.get_daily_summary(request.user, date)
-        return Response({"code": 200, "data": data})
+        
+        # 计算百分比
+        macros = data.get('macros', {})
+        c_g = float(data.get('carb', macros.get('carbohydrates', macros.get('carbg', 0))) or 0)
+        p_g = float(data.get('protein', macros.get('protein', macros.get('proteing', 0))) or 0)
+        f_g = float(data.get('fat', macros.get('fat', macros.get('fatg', 0))) or 0)
+        total_cals = (c_g * 4) + (p_g * 4) + (f_g * 9)
 
+        if total_cals > 0:
+            carb_pct = round((c_g * 4 / total_cals) * 100)
+            protein_pct = round((p_g * 4 / total_cals) * 100)
+            fat_pct = round((f_g * 9 / total_cals) * 100)
+        else:
+            carb_pct = protein_pct = fat_pct = 0
+            
+        # 将百分比注入到 data 内部
+        data['carbPercent'] = carb_pct
+        data['proteinPercent'] = protein_pct
+        data['fatPercent'] = fat_pct
+
+        # 核心修改：同时将这三个字段铺平放在最外层，防止前端解包错误
+        return Response({
+            "code": 200, 
+            "data": data,
+            "carbPercent": carb_pct,
+            "proteinPercent": protein_pct,
+            "fatPercent": fat_pct
+        })
+        
+
+            
 class DietWeeklyReportView(APIView):
     """
     [完整逻辑] 周报数据接口
@@ -67,9 +102,36 @@ class DailyChartDataView(APIView):
     def get(self, request):
         d_str = request.query_params.get('date')
         date = datetime.date.fromisoformat(d_str) if d_str else datetime.date.today()
-        # ChartService 内部会调用 ReportService
+        
         data = ChartService.get_daily_chart(request.user, date)
-        return Response({"code": 200, "data": data})
+        
+        # 计算百分比
+        macros = data.get('macros', {})
+        c_g = float(data.get('carb', macros.get('carbohydrates', macros.get('carbg', 0))) or 0)
+        p_g = float(data.get('protein', macros.get('protein', macros.get('proteing', 0))) or 0)
+        f_g = float(data.get('fat', macros.get('fat', macros.get('fatg', 0))) or 0)
+        total_cals = (c_g * 4) + (p_g * 4) + (f_g * 9)
+
+        if total_cals > 0:
+            carb_pct = round((c_g * 4 / total_cals) * 100)
+            protein_pct = round((p_g * 4 / total_cals) * 100)
+            fat_pct = round((f_g * 9 / total_cals) * 100)
+        else:
+            carb_pct = protein_pct = fat_pct = 0
+            
+        # 将百分比注入到 data 内部
+        data['carbPercent'] = carb_pct
+        data['proteinPercent'] = protein_pct
+        data['fatPercent'] = fat_pct
+
+        # 核心修改：同时将这三个字段铺平放在最外层，防止前端解包错误
+        return Response({
+            "code": 200, 
+            "data": data,
+            "carbPercent": carb_pct,
+            "proteinPercent": protein_pct,
+            "fatPercent": fat_pct
+        })
 
 class WeightChartDataView(APIView):
     """图表数据接口 - 体重"""
@@ -103,3 +165,52 @@ class WeeklyChartDataView(APIView):
                 
         data = ChartService.get_weekly_chart(request.user, start, end)
         return Response({"code": 200, "data": data})
+
+
+class DietHistoryTrendView(APIView):
+    """历史趋势大盘: GET /diet/report/history/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        user = request.user
+        
+        # 1. 获取体重趋势 (按日期正序排，前端画折线图需要)
+        weights_qs = WeightRecord.objects.filter(user=user).order_by('date')
+        weights = [{"weight": float(w.weight), "date": w.date.strftime('%Y-%m-%d')} for w in weights_qs]
+        
+        # 2. 获取用餐/打卡总次数 (饮食记录的总条数)
+        total_meals = DailyIntake.objects.filter(user=user).count()
+
+        # 3. 计算完美天数与日趋势
+        profile = getattr(user, 'profile', None)
+        target_limit = profile.daily_kcal_limit if profile and profile.daily_kcal_limit else 2000
+        
+        # 按日聚合摄入热量
+        daily_calories = DailyIntake.objects.filter(user=user).values('record_date').annotate(
+            total_cal=Sum('calories')
+        ).order_by('record_date')
+        
+        perfect_days = 0
+        trend = []
+        
+        for daily in daily_calories:
+            consumed = daily['total_cal'] or 0
+            
+            # 判断是否达标 (大于0且未超出目标热量视为完美天数)
+            if 0 < consumed <= target_limit:
+                perfect_days += 1
+                
+            trend.append({
+                "date": daily['record_date'].strftime('%Y-%m-%d'),
+                "consumed": consumed,
+                "target": target_limit
+            })
+
+        data = {
+            "weights": weights,
+            "total_meals": total_meals,
+            "perfect_days": perfect_days,
+            "trend": trend
+        }
+        
+        return Response({"code": 200, "msg": "success", "data": data})
