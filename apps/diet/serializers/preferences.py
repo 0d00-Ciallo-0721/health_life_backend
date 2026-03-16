@@ -30,3 +30,17 @@ class UserPreferenceSerializer(serializers.ModelSerializer):
     class Meta:
         model = UserPreference
         fields = ['target_id', 'target_type', 'action']
+
+
+# [新增] 统一多态收藏对象序列化器，追加在文件末尾
+class FavoriteItemSerializer(serializers.Serializer):
+    """
+    统一收藏列表出参序列化
+    确保前端接收到的数据具有严格规范的归一化结构
+    """
+    id = serializers.CharField(help_text="目标ID (Mongo Object ID)")
+    type = serializers.CharField(help_text="类型: recipe/restaurant/feed/sport")
+    name = serializers.CharField(help_text="展示名称或动态内容截取")
+    image = serializers.CharField(allow_blank=True, required=False, help_text="瀑布流封面图")
+    calories = serializers.IntegerField(allow_null=True, required=False, help_text="卡路里(针对菜谱或运动帖)")
+    rating = serializers.FloatField(allow_null=True, required=False, help_text="评分(针对商家)")        

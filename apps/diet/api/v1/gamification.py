@@ -157,23 +157,16 @@ class LeaderboardView(APIView):
 
 # [新增] 成就视图
 class AchievementView(APIView):
-    """我的成就列表: GET /diet/achievements/"""
+    """我的成就列表: GET /achievements/"""
     permission_classes = [IsAuthenticated]
 
+    # [修改] 替换原有逻辑，对接 GamificationService 合并视图
     def get(self, request):
-        my_achievements = UserAchievement.objects.filter(user=request.user).values_list('achievement__code', flat=True)
-        all_achievements = Achievement.objects.all()
+        from apps.diet.domains.gamification.services import GamificationService
         
-        data = []
-        for a in all_achievements:
-            data.append({
-                "code": a.code,
-                "title": a.title,
-                "desc": a.desc,
-                "unlocked": a.code in my_achievements
-            })
+        data = GamificationService.get_merged_achievements(request.user)
+        
         return Response({"code": 200, "msg": "success", "data": data})
-
 # [新增] 添加补救方案至计划视图
 class RemedyPlanActionView(APIView):
     """加入补救计划: POST /diet/remedy/add-to-plan/"""

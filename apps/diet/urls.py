@@ -15,7 +15,7 @@ from apps.diet.api.v1.discovery import (
 )
 from apps.diet.api.v1.journal import (
     LogIntakeView, DietLogDetailView, WeightView, WorkoutLogView,
-    WorkoutStatsTodayView, WorkoutDetailView
+    WorkoutStatsTodayView, WorkoutDetailView, WaterIntakeView
 )
 from apps.diet.api.v1.community import (
     CommunityFeedView, CommunityShareListView, 
@@ -128,4 +128,8 @@ urlpatterns = [
     path('report/weekly/', DietWeeklyReportView.as_view(), name='report_weekly'), 
     path('report/calendar/', DietCalendarView.as_view(), name='report_calendar'), 
     path('report/history/', DietHistoryTrendView.as_view(), name='report_history'),
+
+    # [新增] 饮水记录持久化同步路由
+    path('water-intake/', WaterIntakeView.as_view(), name='water_intake'),
+
 ]

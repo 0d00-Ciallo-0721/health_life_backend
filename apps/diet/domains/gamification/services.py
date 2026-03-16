@@ -78,3 +78,65 @@ class GamificationService:
             return results
         except Exception:
             return []
+
+
+    @staticmethod
+    def get_merged_achievements(user):
+        """
+        全表扫描 Achievement，并 Left Join UserAchievement (模拟合并视图)
+        计算出 unlocked 和 unlocked_at 返回给前端荣誉墙
+        """
+        from apps.diet.models.mysql.gamification import Achievement, UserAchievement
+        
+        # 1. 查询当前用户解锁的所有成就，提取成映射字典(避免 N+1 数据库查询)
+        user_achievements = UserAchievement.objects.filter(user=user)
+        unlocked_map = {ua.achievement_id: ua.unlocked_at for ua in user_achievements}
+        
+        # 2. 全表扫描字典表
+        all_achievements = Achievement.objects.all()
+        
+        results = []
+        for a in all_achievements:
+            unlocked_at = unlocked_map.get(a.id)
+            results.append({
+                "id": str(a.id),
+                "name": a.title,            # 对齐前端字段名 name
+                "description": a.desc,      # 对齐前端字段名 description
+                "icon": a.icon or "",
+                "category": a.category,
+                "rarity": a.rarity,
+                "points": a.points,
+                "unlocked": a.id in unlocked_map,
+                "unlocked_at": unlocked_at.isoformat() if unlocked_at else None
+            })
+            
+        return results
+
+    @staticmethod
+    def get_user_featured_badges(user_id):
+        """
+        供其他模块（如 Profile 和 Community）调用
+        获取用户个性名片代表徽章 (最多 3 个)，若未设置则兜底最近解锁的徽章
+        """
+        from apps.diet.models.mysql.gamification import UserFeaturedBadge, UserAchievement
+        
+        # 1. 尝试查询用户主动配置的代表徽章
+        featured = UserFeaturedBadge.objects.filter(user_id=user_id)\
+            .select_related('achievement').order_by('sort_order')[:3]
+        
+        if not featured.exists():
+            # 2. 兜底策略：取最近解锁的 3 个徽章
+            fallback = UserAchievement.objects.filter(user_id=user_id)\
+                .select_related('achievement').order_by('-unlocked_at')[:3]
+            
+            return [{
+                "id": str(item.achievement.id),
+                "name": item.achievement.title,
+                "icon": item.achievement.icon or ""
+            } for item in fallback]
+
+        return [{
+            "id": str(badge.achievement.id),
+            "name": badge.achievement.title,
+            "icon": badge.achievement.icon or ""
+        } for badge in featured]

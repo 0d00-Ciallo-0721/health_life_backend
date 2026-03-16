@@ -1,6 +1,8 @@
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from apps.diet.models import WeightRecord
+from apps.diet.models.mysql.journal import WaterIntake # [新增] 导入饮水模型
 
 from apps.diet.domains.journal.intake_service import IntakeService
 from apps.diet.domains.journal.workout_service import WorkoutService
@@ -148,3 +150,63 @@ class WorkoutDetailView(APIView):
             "date": record.date.strftime('%Y-%m-%d')
         }
         return Response({"code": 200, "msg": "success", "data": data})
+    
+
+class WaterIntakeView(APIView):
+    """
+    饮水记录视图
+    GET /diet/water-intake/?date=YYYY-MM-DD
+    POST /diet/water-intake/ {"date": "YYYY-MM-DD", "cups": 8}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        date_str = request.query_params.get('date')
+        if not date_str:
+            from django.utils import timezone
+            date_str = timezone.now().date().strftime('%Y-%m-%d')
+            
+        record = WaterIntake.objects.filter(user=request.user, date=date_str).first()
+        
+        # 联动阶段一：读取用户的饮水目标，若无 profile 或未设置则兜底使用 8
+        goal = 8
+        if hasattr(request.user, 'profile') and request.user.profile:
+            goal = getattr(request.user.profile, 'water_goal_cups', 8)
+            
+        return Response({
+            "code": 200, 
+            "msg": "success", 
+            "data": {
+                "date": date_str,
+                "cups": record.cups if record else 0,
+                "goal": goal
+            }
+        })
+
+    def post(self, request):
+        date_str = request.data.get('date')
+        cups = request.data.get('cups')
+        
+        if not date_str or cups is None:
+            return Response({"code": 400, "msg": "缺少 date 或 cups 参数"}, status=400)
+            
+        try:
+            cups = int(cups)
+        except ValueError:
+            return Response({"code": 400, "msg": "cups 必须是整数"}, status=400)
+            
+        # 核心逻辑：存在则更新，不存在则创建 (幂等写入)
+        record, created = WaterIntake.objects.update_or_create(
+            user=request.user,
+            date=date_str,
+            defaults={'cups': cups}
+        )
+        
+        return Response({
+            "code": 200, 
+            "msg": "success", 
+            "data": {
+                "date": str(record.date),
+                "cups": record.cups
+            }
+        })

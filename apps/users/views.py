@@ -60,12 +60,12 @@ class UserMetaView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
+    # [修改] 更新 UserMetaView 中的 get 方法
     def get(self, request):
         user = request.user
         profile, _ = Profile.objects.get_or_create(user=user)
 
         # 1. 计算加入天数
-        # 注意处理时区问题，这里简化为日期差
         days_joined = (timezone.now().date() - user.date_joined.date()).days + 1
 
         # 2. 转换 goal_type 为中文
@@ -75,8 +75,16 @@ class UserMetaView(APIView):
         data = {
             "nickname": user.nickname,
             "avatar": profile.avatar.url if profile.avatar else (user.avatar or ""),
-            "days_joined": days_joined, # [v3.1 确认]
+            "days_joined": days_joined, 
             "goal_type": goal_display,
-            "daily_limit": profile.daily_kcal_limit
+            "daily_limit": profile.daily_kcal_limit,
+            
+            # [新增] 扩展返回字段，确保多端视图数据一致性
+            "water_goal_cups": profile.water_goal_cups,
+            "follow_count": 0,       # 待阶段四接入逻辑
+            "fans_count": 0,         # 待阶段四接入逻辑
+            "like_count": 0,         # 待阶段四接入逻辑
+            "badges": [],            # 待阶段二接入逻辑
+            "featured_badges": []    # 待阶段二接入逻辑
         }
         return Response({"code": 200, "data": data})

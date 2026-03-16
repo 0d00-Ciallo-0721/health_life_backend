@@ -11,9 +11,10 @@ class CommunityFeedView(APIView):
     def get(self, request):
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 10))
-        data = CommunityService.get_feed_list(page, page_size)
+        # [修改] 传递 request.user.id 进去用于 is_saved 状态判断
+        data = CommunityService.get_feed_list(page, page_size, current_user_id=request.user.id)
         return Response({"code": 200, "msg": "success", "data": data})
-
+    
     def post(self, request):
         # 兼容 /share/ 和 /feed/ POST
         feed_id = CommunityService.publish_feed(request.user.id, request.data)
@@ -63,3 +64,30 @@ class CommunityCommentView(APIView):
         if "error" in res:
             return Response({"code": 404, "msg": res["error"]}, status=404)
         return Response({"code": 200, "msg": "评论成功", "data": res})
+    
+
+# [新增] 用户关注操作视图
+class UserFollowView(APIView):
+    """关注/取消关注: POST/DELETE /user/{userId}/follow/"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, userId):
+        if str(request.user.id) == str(userId):
+            return Response({"code": 400, "msg": "不能关注自己"}, status=400)
+        res = CommunityService.toggle_follow(request.user.id, userId, 'follow')
+        return Response({"code": 200, "msg": "关注成功", "data": res})
+
+    def delete(self, request, userId):
+        res = CommunityService.toggle_follow(request.user.id, userId, 'unfollow')
+        return Response({"code": 200, "msg": "已取消关注", "data": res})
+
+# [新增] 用户公共主页视图
+class UserProfileByIdView(APIView):
+    """用户公开主页: GET /user/{userId}/profile/"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, userId):
+        data = CommunityService.get_user_profile(userId, request.user.id)
+        if not data:
+            return Response({"code": 404, "msg": "用户不存在"}, status=404)
+        return Response({"code": 200, "msg": "success", "data": data})    

@@ -34,10 +34,17 @@ class PreferenceOperationView(APIView):
 
 class FavoriteListView(APIView):
     permission_classes = [IsAuthenticated]
+    
     def get(self, request):
-        data = PreferenceSelector.get_user_favorites(
-            request.user, 
-            request.query_params.get('type', 'all'), 
-            int(request.query_params.get('page', 1))
-        )
-        return Response({"code": 200, "data": data})
+        # 1. 提取前端的分类过滤参数，默认为 all
+        filter_type = request.query_params.get('type', 'all')
+        
+        # 2. 调用 Service 层的多态跨库聚合引擎
+        from apps.diet.domains.preferences.services import PreferenceService
+        data = PreferenceService.get_favorites(request.user, filter_type=filter_type)
+        
+        # 3. 经过多态序列化器格式化输出
+        from apps.diet.serializers.preferences import FavoriteItemSerializer
+        serializer = FavoriteItemSerializer(data, many=True)
+        
+        return Response({"code": 200, "msg": "success", "data": serializer.data})

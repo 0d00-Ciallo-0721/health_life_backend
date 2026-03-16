@@ -81,10 +81,37 @@ class Achievement(models.Model):
     title = models.CharField(max_length=64, verbose_name="成就名称")
     desc = models.CharField(max_length=255, verbose_name="成就描述")
     icon = models.CharField(max_length=255, blank=True, null=True, verbose_name="图标URL")
+    
+    # [新增] 满足前端合并视图所需字段
+    category = models.CharField(
+        max_length=32, 
+        choices=(('daily', '每日'), ('weekly', '每周'), ('monthly', '每月'), ('special', '特殊')), 
+        default='special', 
+        verbose_name="分类"
+    )
+    rarity = models.CharField(
+        max_length=32, 
+        choices=(('common', '普通'), ('rare', '稀有'), ('epic', '史诗')), 
+        default='common', 
+        verbose_name="稀有度"
+    )
+    points = models.IntegerField(default=10, verbose_name="积分")
 
     class Meta:
         db_table = 'diet_achievement'
         verbose_name = "成就字典"
+
+class UserFeaturedBadge(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='featured_badges')
+    achievement = models.ForeignKey(Achievement, on_delete=models.CASCADE)
+    sort_order = models.IntegerField(default=0, verbose_name="排序序号")
+
+    class Meta:
+        db_table = 'diet_userfeaturedbadge'
+        verbose_name = "个性名片代表徽章"
+        # 确保同一用户不会设置重复的代表徽章
+        unique_together = ('user', 'achievement')
+        ordering = ['sort_order']
 
 # [新增] 用户成就关联表
 class UserAchievement(models.Model):

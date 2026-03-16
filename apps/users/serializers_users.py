@@ -1,55 +1,87 @@
-from rest_framework import serializers
-from .models import User, Profile
-
-class UserSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ['id', 'username', 'avatar', 'nickname']
-
+# [修改] 完整类代码更新
 class ProfileSerializer(serializers.ModelSerializer):
     # 1. 映射 User 表的昵称
     nickname = serializers.CharField(source='user.nickname', required=False)
     
     # 2. 头像字段 (只读，返回 URL字符串)
-    # 图片上传走单独的 POST /diet/profile/avatar/ 接口
     avatar = serializers.SerializerMethodField()
+
+    # [新增] 社交维度字段预留 (动态计算)
+    follow_count = serializers.SerializerMethodField()
+    fans_count = serializers.SerializerMethodField()
+    like_count = serializers.SerializerMethodField()
+
+    # [新增] 游戏化维度字段预留 (动态计算)
+    badges = serializers.SerializerMethodField()
+    featured_badges = serializers.SerializerMethodField()
 
     class Meta:
         model = Profile
         fields = [
             'nickname', 
             'avatar', 
-            'signature',        # [新增] 个性签名
+            'signature',        
             'gender', 
             'height', 
             'weight', 
-            'target_weight',    # [新增] 目标体重
+            'target_weight',    
             'age', 
             'activity_level', 
             'diet_tags', 
             'allergens', 
             'daily_kcal_limit', 
-            'bmr',              # [新增] 基础代谢率 (自动计算)
-            'goal_type'         # [新增] 目标类型
+            'bmr',              
+            'goal_type',
+            'water_goal_cups',   # [新增] 饮水目标
+            'follow_count',      # [新增] 关注数
+            'fans_count',        # [新增] 粉丝数
+            'like_count',        # [新增] 获赞数
+            'badges',            # [新增] 所有徽章
+            'featured_badges'    # [新增] 代表徽章
         ]
-        # 自动计算字段设为只读
-        read_only_fields = ['daily_kcal_limit', 'bmr']
+        # 自动计算与关联字段设为只读
+        read_only_fields = [
+            'daily_kcal_limit', 'bmr', 
+            'follow_count', 'fans_count', 'like_count', 
+            'badges', 'featured_badges'
+        ]
 
     def get_avatar(self, obj):
         """
         优先返回 Profile 中上传的头像，如果没有则返回 User 中的微信头像
         """
         if obj.avatar:
-            # 返回完整的媒体文件 URL (需配置 MEDIA_URL)
             return obj.avatar.url
-        # 兜底：返回微信头像 (如果 User 模型里有存的话)
         return obj.user.avatar if hasattr(obj.user, 'avatar') else ""
+
+    # -------- [新增] 动态字段方法预留 --------
+    
+    def get_follow_count(self, obj):
+        # 阶段四实现：查询用户关注了多少人
+        return getattr(obj, 'prefetched_follow_count', 0)
+
+    def get_fans_count(self, obj):
+        # 阶段四实现：查询用户的粉丝数量
+        return getattr(obj, 'prefetched_fans_count', 0)
+
+    def get_like_count(self, obj):
+        # 阶段四实现：查询该用户发布社区动态获得的总点赞数
+        return getattr(obj, 'prefetched_like_count', 0)
+
+    def get_badges(self, obj):
+        # 阶段二实现：聚合查询用户解锁的所有勋章字典
+        return []
+
+    def get_featured_badges(self, obj):
+        # 阶段二实现：查询用户的代表徽章(最多3个)
+        return []
+
+    # ----------------------------------------
 
     def update(self, instance, validated_data):
         """
         重写 update 以支持嵌套字段 (nickname) 的更新
         """
-        # 提取 user 字典 (因为 source='user.nickname')
         user_data = validated_data.pop('user', {})
         
         # 1. 更新 User 表字段 (昵称)

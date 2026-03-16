@@ -81,3 +81,20 @@ class WeightRecord(models.Model):
         db_table = 'diet_weightrecord'
         unique_together = ('user', 'date')
         ordering = ['-date']
+
+
+class WaterIntake(models.Model):
+    """
+    饮水记录 (MySQL)
+    """
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='water_records')
+    date = models.DateField(default=timezone.now, verbose_name="日期")
+    cups = models.IntegerField(default=0, verbose_name="杯数")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = 'diet_waterintake'
+        verbose_name = "饮水记录"
+        # 核心约束：保证同一用户每天只有一条数据，配合 update_or_create 实现幂等
+        unique_together = ('user', 'date')

@@ -1,7 +1,7 @@
 # [新增] 整个文件: apps/diet/models/mongo/community.py
 import datetime
 from mongoengine import Document, StringField, IntField, ListField, DateTimeField, ReferenceField, CASCADE
-from mongoengine import DictField 
+
 class CommunityFeed(Document):
     """
     社区动态流 (MongoDB)
@@ -13,14 +13,8 @@ class CommunityFeed(Document):
     user_id = IntField(required=True) # 关联 MySQL 中的 User ID
     content = StringField(required=True)
     images = ListField(StringField()) # 图片 URL 列表
-    
-    # [修改] 增加 'meal', 'sport' 类型支持
-    feed_type = StringField(default='post', choices=['post', 'recipe', 'restaurant', 'meal', 'sport']) 
+    feed_type = StringField(default='post', choices=['post', 'recipe', 'restaurant']) # 动态类型
     target_id = StringField() # 如果是分享菜谱/商家，记录对应的 ID
-    
-    # [新增] 运动记录专属字段 (非结构化嵌套)
-    sport_info = DictField() 
-    
     likes_count = IntField(default=0)
     comments_count = IntField(default=0)
     created_at = DateTimeField(default=datetime.datetime.utcnow)
