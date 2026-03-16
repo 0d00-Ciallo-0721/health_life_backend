@@ -60,6 +60,43 @@ class UserManageViewSet(viewsets.ModelViewSet):
         user.save()
         status_text = "启用" if user.is_active else "禁用"
         return Response({"msg": f"用户已{status_text}"})
+    
+    def list(self, request, *args, **kwargs):
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # 处理分页
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            data = self._inject_profile_data(serializer.data, [obj.id for obj in page])
+            return self.get_paginated_response(data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        data = self._inject_profile_data(serializer.data, [obj.id for obj in queryset])
+        return Response({"code": 200, "data": data})
+
+    # 🚀 [新增] 跨表注入辅助方法
+    def _inject_profile_data(self, data, user_ids):
+        from apps.users.models_users import Profile
+        
+        # 批量查询 Profile 避免 N+1
+        profiles = Profile.objects.filter(user_id__in=user_ids)
+        profile_map = {p.user_id: p for p in profiles}
+        
+        goal_map = {'lose': '减脂', 'maintain': '保持', 'gain': '增肌'}
+        
+        for item in data:
+            p = profile_map.get(item['id'])
+            if p:
+                item['goal_type'] = goal_map.get(p.goal_type, '未知')
+                item['water_goal_cups'] = p.water_goal_cups
+            else:
+                item['goal_type'] = '未知'
+                item['water_goal_cups'] = 8 # 默认值
+                
+        return data
+
+
 
 
 class RecipeAuditViewSet(viewsets.ViewSet):
@@ -347,3 +384,56 @@ class CommentViewSet(viewsets.ViewSet):
             return Response({"code": 200, "msg": "违规评论删除成功"})
         except Exception:
             return Response({"code": 404, "msg": "评论不存在"})
+        
+
+class JournalMacroStatsView(APIView):
+    """
+    日志与健康管理宏观数据聚合 (供后台 Dashboard 图表调用)
+    GET /admin/api/v1/business/stats/journal/
+    """
+    permission_classes = [IsAuthenticated, IsAdminUser, RBACPermission]
+    # 对齐阶段一初始化的健康业务顶级菜单权限
+    perms_map = {'get': 'health:manage'} 
+
+    def get(self, request):
+        from apps.diet.models.mysql.journal import WaterIntake, DailyIntake
+        from django.utils import timezone
+        
+        today = timezone.now().date()
+        
+        # 1. 饮水达标率统计
+        water_records = WaterIntake.objects.filter(date=today).select_related('user__profile')
+        total_water_users = water_records.count()
+        completed_users = 0
+        total_cups = 0
+        
+        for record in water_records:
+            total_cups += record.cups
+            # 动态判断用户的目标，若无 Profile 则按默认 8 杯算
+            goal = record.user.profile.water_goal_cups if (hasattr(record.user, 'profile') and record.user.profile) else 8
+            if record.cups >= goal:
+                completed_users += 1
+                
+        water_completion_rate = round(completed_users / total_water_users * 100, 2) if total_water_users > 0 else 0.0
+        
+        # 2. 平均打卡情况 (今日饮食记录)
+        intake_users_count = DailyIntake.objects.filter(record_date=today).values('user_id').distinct().count()
+        total_intake_records = DailyIntake.objects.filter(record_date=today).count()
+        avg_intake_per_user = round(total_intake_records / intake_users_count, 1) if intake_users_count > 0 else 0.0
+        
+        data = {
+            "today": today.strftime('%Y-%m-%d'),
+            "water_stats": {
+                "total_users_logged": total_water_users,
+                "completed_users": completed_users,
+                "completion_rate_pct": water_completion_rate,
+                "total_cups_drank": total_cups
+            },
+            "intake_stats": {
+                "total_users_logged": intake_users_count,
+                "total_records": total_intake_records,
+                "avg_records_per_user": avg_intake_per_user
+            }
+        }
+        
+        return Response({"code": 200, "msg": "success", "data": data})        

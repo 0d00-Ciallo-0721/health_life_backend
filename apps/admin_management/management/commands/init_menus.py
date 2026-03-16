@@ -104,6 +104,50 @@ class Command(BaseCommand):
                 'sort_order': 70
             }
         )
+
+        # ================= [新增] 领域模块菜单配置 =================
+
+        # 🚀 [新增] 游戏化管理 (顶级菜单)
+        game_menu, _ = Menu.objects.update_or_create(
+            permission_code='game:manage',
+            defaults={
+                'name': '游戏化管理',
+                'path': '',
+                'icon': 'Trophy',
+                'sort_order': 20
+            }
+        )
+        Menu.objects.update_or_create(permission_code='game:achievement:list', defaults={'name': '成就管理', 'path': './pages/game/achievements.html', 'parent': game_menu, 'sort_order': 21})
+        Menu.objects.update_or_create(permission_code='game:challenge:list', defaults={'name': '挑战任务管理', 'path': './pages/game/challenges.html', 'parent': game_menu, 'sort_order': 22})
+        Menu.objects.update_or_create(permission_code='game:remedy:list', defaults={'name': '补救方案管理', 'path': './pages/game/remedies.html', 'parent': game_menu, 'sort_order': 23})
+
+        # 🚀 [新增] 社区与社交管理 (顶级菜单)
+        social_menu, _ = Menu.objects.update_or_create(
+            permission_code='social:manage',
+            defaults={
+                'name': '社区与社交管理',
+                'path': '',
+                'icon': 'ChatDotRound',
+                'sort_order': 30
+            }
+        )
+        Menu.objects.update_or_create(permission_code='social:feed:list', defaults={'name': '动态流审核', 'path': './pages/social/feeds.html', 'parent': social_menu, 'sort_order': 31})
+        Menu.objects.update_or_create(permission_code='social:follow:list', defaults={'name': '用户关注关系查询', 'path': './pages/social/follows.html', 'parent': social_menu, 'sort_order': 32})
+
+        # 🚀 [新增] 日志与健康管理 (顶级菜单)
+        health_menu, _ = Menu.objects.update_or_create(
+            permission_code='health:manage',
+            defaults={
+                'name': '日志与健康管理',
+                'path': '',
+                'icon': 'DataLine',
+                'sort_order': 40
+            }
+        )
+        Menu.objects.update_or_create(permission_code='health:water:list', defaults={'name': '饮水记录聚合', 'path': './pages/health/water.html', 'parent': health_menu, 'sort_order': 41})
+        Menu.objects.update_or_create(permission_code='health:intake:list', defaults={'name': '体重/摄入聚合视图', 'path': './pages/health/intake.html', 'parent': health_menu, 'sort_order': 42})
+
+
         # 🚀 预置一些系统参数 (保持不变)
         configs = [
             {'key': 'app_version', 'value': '3.1.0', 'desc': '小程序当前版本号', 'public': True},
