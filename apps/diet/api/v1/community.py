@@ -91,3 +91,53 @@ class UserProfileByIdView(APIView):
         if not data:
             return Response({"code": 404, "msg": "用户不存在"}, status=404)
         return Response({"code": 200, "msg": "success", "data": data})    
+    
+
+# [新增] 帖子详情视图
+class CommunityFeedDetailView(APIView):
+    """
+    帖子详情
+    GET /community/feed/{feedId}/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, feedId):
+        data = CommunityService.get_feed_detail(feedId, current_user_id=request.user.id)
+        if not data:
+            return Response({"code": 404, "msg": "帖子不存在或已被删除"})
+        return Response({"code": 200, "msg": "success", "data": data})
+
+# [新增] 帖子收藏视图
+class CommunitySaveView(APIView):
+    """
+    收藏/取消收藏
+    POST/DELETE /community/feed/{feedId}/save/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, feedId):
+        res = CommunityService.toggle_save(request.user.id, feedId, 'save')
+        if "error" in res:
+            return Response({"code": 400, "msg": res["error"]})
+        return Response({"code": 200, "msg": "收藏成功", "data": res})
+
+    def delete(self, request, feedId):
+        res = CommunityService.toggle_save(request.user.id, feedId, 'unsave')
+        if "error" in res:
+            return Response({"code": 400, "msg": res["error"]})
+        return Response({"code": 200, "msg": "已取消收藏", "data": res})
+
+# [新增] 帖子举报视图
+class CommunityReportView(APIView):
+    """
+    举报
+    POST /community/feed/{feedId}/report/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, feedId):
+        reason = request.data.get("reason", "内容违规")
+        res = CommunityService.report_feed(request.user.id, feedId, reason)
+        if "error" in res:
+            return Response({"code": 400, "msg": res["error"]})
+        return Response({"code": 200, "msg": "举报成功，感谢您的反馈", "data": res})    

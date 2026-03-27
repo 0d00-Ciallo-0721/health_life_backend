@@ -19,13 +19,15 @@ from apps.diet.api.v1.journal import (
 )
 from apps.diet.api.v1.community import (
     CommunityFeedView, CommunityShareListView, 
-    CommunityLikeView, CommunityCommentView
+    CommunityLikeView, CommunityCommentView,
+    CommunityFeedDetailView, CommunitySaveView, CommunityReportView  # [新增导入]
 )
 from apps.diet.api.v1.gamification import (
     ChallengeTaskView, ChallengeJoinView, ChallengeProgressView, ChallengeProgressActionView,
     LeaderboardView, AchievementView, 
     RemedySolutionView, RemedyPlanActionView, RemedyUsageHistoryView,
-    CarbonFootprintView, CarbonWeeklyView, CarbonSuggestionView, CarbonHistoryView, CarbonAchievementView
+    CarbonFootprintView, CarbonWeeklyView, CarbonSuggestionView, CarbonHistoryView, CarbonAchievementView,
+    RemedyFavoriteView, ChallengeTaskProgressCompatView  # [新增导入]
 )
 from apps.diet.api.v1.tools import (
     AIFoodRecognitionView, AINutritionistView,
@@ -83,13 +85,20 @@ urlpatterns = [
     path('community/restaurants/', CommunityShareListView.as_view(feed_type='restaurant'), name='community_restaurants'),
     path('community/feed/<str:feedId>/like/', CommunityLikeView.as_view(), name='community_like'),
     path('community/feed/<str:feedId>/comments/', CommunityCommentView.as_view(), name='community_comment'),
-
+    path('community/feed/<str:feedId>/', CommunityFeedDetailView.as_view(), name='community_feed_detail'),
+    path('community/feed/<str:feedId>/save/', CommunitySaveView.as_view(), name='community_save'),
+    path('community/feed/<str:feedId>/report/', CommunityReportView.as_view(), name='community_report'),
+    
     # ==========================================
     # 6. 游戏化：挑战、成就与补救 (Gamification Domain)
     # ==========================================
     # 挑战与成就
     path('challenge/tasks/', ChallengeTaskView.as_view(), name='challenge_tasks'),
     path('challenge/tasks/<int:challengeId>/join/', ChallengeJoinView.as_view(), name='challenge_join'),
+    
+    # [新增] 兼容前端调用的任务进度路由
+    path('challenge/tasks/<int:taskId>/progress/', ChallengeTaskProgressCompatView.as_view(), name='challenge_task_progress_compat'),
+    
     path('challenge/progress/', ChallengeProgressView.as_view(), name='challenge_progress'),
     path('challenge/progress/<int:progressId>/<str:action>/', ChallengeProgressActionView.as_view(), name='challenge_action'),
     path('challenge/leaderboard/', LeaderboardView.as_view(), name='challenge_leaderboard'),
@@ -99,6 +108,9 @@ urlpatterns = [
     path('remedy/solutions/', RemedySolutionView.as_view(), name='remedy_solutions'),
     path('remedy/add-to-plan/', RemedyPlanActionView.as_view(), name='remedy_add_plan'),
     path('remedy/usage-history/', RemedyUsageHistoryView.as_view(), name='remedy_usage_history'),
+    
+    # [新增] 补救方案收藏路由
+    path('remedy/favorite/', RemedyFavoriteView.as_view(), name='remedy_favorite'),
     
     # 碳足迹
     path('carbon/footprint/', CarbonFootprintView.as_view(), name='carbon_footprint'),

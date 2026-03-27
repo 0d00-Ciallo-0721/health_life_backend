@@ -185,3 +185,94 @@ class CommunityService:
             "like_count": like_count,
             "is_followed": is_followed
         }    
+    
+    @classmethod
+    def get_feed_detail(cls, feed_id: str, current_user_id: int):
+        """获取单个帖子详情"""
+        from apps.diet.models.mongo.community import CommunityFeed
+        # 假设跨库的偏好存储在 MySQL 中
+        from apps.diet.models.mysql.preference import Preference
+        
+        try:
+            feed = CommunityFeed.objects.get(id=feed_id)
+            # 序列化 MongoDB 文档
+            feed_data = feed.to_mongo().to_dict() if hasattr(feed, 'to_mongo') else feed
+            feed_data['id'] = str(feed.id)
+            if '_id' in feed_data:
+                del feed_data['_id']
+            
+            # 计算当前用户的交互状态 (点赞与收藏)
+            # is_liked 可能通过 MongoDB 数组实现，is_saved 可能存在 MySQL 中，这里做通用适配
+            feed_data['is_liked'] = current_user_id in getattr(feed, 'likes', [])
+            
+            # 判断收藏状态
+            feed_data['is_saved'] = Preference.objects.filter(
+                user_id=current_user_id, 
+                target_id=feed_id, 
+                target_type='feed', 
+                action='favorite'
+            ).exists()
+            
+            return feed_data
+        except Exception as e:
+            return None
+
+    @classmethod
+    def toggle_save(cls, user_id: int, feed_id: str, action: str):
+        """切换帖子收藏状态"""
+        from apps.diet.models.mongo.community import CommunityFeed
+        from apps.diet.models.mysql.preference import Preference
+        from django.utils import timezone
+        
+        try:
+            feed = CommunityFeed.objects.get(id=feed_id)
+            
+            if action == 'save':
+                # 写入 MySQL (使用统一的 Preference 模型)
+                obj, created = Preference.objects.get_or_create(
+                    user_id=user_id, 
+                    target_id=feed_id, 
+                    target_type='feed',
+                    action='favorite',
+                    defaults={'created_at': timezone.now()}
+                )
+                if created:
+                    # 更新 MongoDB 收藏计数
+                    feed.update(inc__save_count=1)
+            else:
+                deleted, _ = Preference.objects.filter(
+                    user_id=user_id, target_id=feed_id, target_type='feed', action='favorite'
+                ).delete()
+                if deleted:
+                    # 避免计数出现负数
+                    if getattr(feed, 'save_count', 0) > 0:
+                        feed.update(dec__save_count=1)
+                        
+            feed.reload()
+            return {"save_count": getattr(feed, 'save_count', 0), "is_saved": action == 'save'}
+        except Exception as e:
+            return {"error": "帖子不存在或操作失败"}
+
+    @classmethod
+    def report_feed(cls, user_id: int, feed_id: str, reason: str):
+        """创建举报记录"""
+        from apps.diet.models.mongo.community import CommunityFeed
+        from apps.admin_management.models.audit import AuditLog # 假设举报走通用审计或专有举报表
+        
+        try:
+            feed = CommunityFeed.objects.get(id=feed_id)
+            
+            # 记录用户的举报行为 (如果项目中存在专门的 Report 模型请替换 AuditLog)
+            AuditLog.objects.create(
+                user_id=user_id,
+                action="REPORT_FEED",
+                target_id=feed_id,
+                details={"reason": reason}
+            )
+            
+            # 给帖子增加被举报的权重计数 (可选策略)
+            feed.update(inc__report_count=1)
+            
+            return {"status": "reported"}
+        except Exception as e:
+            return {"error": "帖子不存在或处理失败"}    

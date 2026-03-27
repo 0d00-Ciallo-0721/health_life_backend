@@ -140,3 +140,59 @@ class GamificationService:
             "name": badge.achievement.title,
             "icon": badge.achievement.icon or ""
         } for badge in featured]
+    
+
+    @staticmethod
+    def toggle_remedy_favorite(user_id: int, remedy_id: int):
+        """切换补救方案的收藏状态"""
+        from apps.diet.models.mysql.preference import Preference
+        from apps.diet.models.mysql.gamification import Remedy
+        from django.utils import timezone
+        
+        try:
+            # 确认该 Remedy 存在
+            if not Remedy.objects.filter(id=remedy_id).exists():
+                return {"error": "该补救方案不存在"}
+                
+            # 使用全局统一的 Preference 模型存储收藏行为
+            obj, created = Preference.objects.get_or_create(
+                user_id=user_id,
+                target_id=str(remedy_id),
+                target_type='remedy',
+                action='favorite',
+                defaults={'created_at': timezone.now()}
+            )
+            
+            if not created:
+                # 若已存在则取消收藏
+                obj.delete()
+                is_saved = False
+            else:
+                is_saved = True
+                
+            return {"is_saved": is_saved, "remedy_id": remedy_id}
+        except Exception as e:
+            return {"error": "收藏操作失败"}
+
+    @staticmethod
+    def update_task_progress_compat(user, task_id: int, progress_val):
+        """兼容接口：基于 task_id 直接更新挑战进度"""
+        from apps.diet.models.mysql.gamification import UserChallengeProgress
+        try:
+            # 寻找当前用户进行中的对应挑战记录
+            record = UserChallengeProgress.objects.filter(
+                user=user, 
+                challenge_id=task_id, 
+                status='pending'
+            ).first()
+            
+            if not record:
+                return {"error": "未找到进行中的该挑战记录，请先加入挑战"}
+            
+            # 更新进度
+            record.progress = progress_val
+            record.save()
+                
+            return {"id": record.id, "progress": record.progress, "status": record.status}
+        except Exception as e:
+            return {"error": "进度更新失败"}    

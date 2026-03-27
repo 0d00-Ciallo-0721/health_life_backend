@@ -14,6 +14,12 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from .models import Profile
 import time
+from django.shortcuts import get_object_or_404
+from apps.common.exceptions import BusinessException
+from .serializers_users import PublicProfileSerializer
+from .services import UserFollowService
+
+
 
 class WeChatLoginView(APIView):
     
@@ -88,3 +94,49 @@ class UserMetaView(APIView):
             "featured_badges": []    # 待阶段二接入逻辑
         }
         return Response({"code": 200, "data": data})
+    
+
+
+# [新增] 他人公开主页视图
+class UserProfileView(APIView):
+    """
+    获取他人公开主页
+    GET /user/{userId}/profile/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, user_id):
+        target_user = get_object_or_404(User, id=user_id)
+        # 确保能获取到目标的 Profile，如果不存则获取并创建默认态
+        profile, _ = Profile.objects.get_or_create(user=target_user)
+        
+        # 传递 request 进 context，是为了让 Serializer 可以判断 is_following
+        serializer = PublicProfileSerializer(profile, context={'request': request})
+        return Response({
+            'code': 200,
+            'msg': 'success',
+            'data': serializer.data
+        })
+
+# [新增] 关注与取消关注视图
+class UserFollowView(APIView):
+    """
+    关注与取消关注
+    POST /user/{userId}/follow/
+    DELETE /user/{userId}/follow/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, user_id):
+        try:
+            UserFollowService.follow(request.user, user_id)
+            return Response({'code': 200, 'msg': '关注成功', 'data': None})
+        except BusinessException as e:
+            return Response({'code': 400, 'msg': str(e)})
+
+    def delete(self, request, user_id):
+        try:
+            UserFollowService.unfollow(request.user, user_id)
+            return Response({'code': 200, 'msg': '已取消关注', 'data': None})
+        except BusinessException as e:
+            return Response({'code': 400, 'msg': str(e)})

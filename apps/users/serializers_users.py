@@ -1,3 +1,6 @@
+
+from rest_framework import serializers
+from .models import Profile, User
 # [修改] 完整类代码更新
 class ProfileSerializer(serializers.ModelSerializer):
     # 1. 映射 User 表的昵称
@@ -91,3 +94,53 @@ class ProfileSerializer(serializers.ModelSerializer):
 
         # 2. 更新 Profile 表字段
         return super().update(instance, validated_data)
+    
+
+# [新增] 他人公开主页序列化器
+class PublicProfileSerializer(serializers.ModelSerializer):
+    """
+    他人公开主页序列化器，剔除敏感隐私信息(如BMR, 日常热量限制等)
+    """
+    nickname = serializers.CharField(source='user.nickname', read_only=True)
+    avatar = serializers.SerializerMethodField()
+    is_following = serializers.SerializerMethodField() # 动态计算：当前访问者是否已关注该用户
+    
+    # 社交维度字段预留 (动态计算)
+    follow_count = serializers.SerializerMethodField()
+    fans_count = serializers.SerializerMethodField()
+    like_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Profile
+        fields = [
+            'nickname', 
+            'avatar', 
+            'signature',        
+            'gender', 
+            'follow_count',      
+            'fans_count',        
+            'like_count',
+            'is_following'       # [新增] 是否关注标记
+        ]
+
+    def get_avatar(self, obj):
+        if obj.avatar:
+            return obj.avatar.url
+        return obj.user.avatar if hasattr(obj.user, 'avatar') else ""
+
+    def get_follow_count(self, obj):
+        return getattr(obj, 'prefetched_follow_count', 0)
+
+    def get_fans_count(self, obj):
+        return getattr(obj, 'prefetched_fans_count', 0)
+
+    def get_like_count(self, obj):
+        return getattr(obj, 'prefetched_like_count', 0)
+
+    def get_is_following(self, obj):
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            # 引入 service 进行权限和关注状态校验，避免循环引入通常放在函数内
+            from .services import UserFollowService
+            return UserFollowService.is_following(request.user, obj.user)
+        return False

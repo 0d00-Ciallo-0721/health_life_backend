@@ -1,5 +1,7 @@
 from rest_framework.views import exception_handler
 from rest_framework.response import Response
+# [新增] 引入 DRF 的 APIException 基类
+from rest_framework.exceptions import APIException
 
 def custom_exception_handler(exc, context):
     """
@@ -26,3 +28,21 @@ def custom_exception_handler(exc, context):
         }, status=response.status_code)
     
     return None
+
+# ==========================================
+# [新增] 业务异常基类 (追加到文件最下方)
+# ==========================================
+class BusinessException(APIException):
+    """
+    自定义业务逻辑异常
+    配合 custom_exception_handler 统一返回格式
+    """
+    status_code = 400
+    default_detail = '业务处理异常'
+    default_code = 'business_error'
+
+    def __init__(self, detail=None, status_code=None):
+        if detail is not None:
+            self.detail = detail
+        if status_code is not None:
+            self.status_code = status_code

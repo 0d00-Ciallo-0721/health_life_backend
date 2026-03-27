@@ -308,3 +308,40 @@ class CarbonAchievementView(APIView):
             ]
             
         return Response({"code": 200, "msg": "success", "data": data})    
+    
+
+# [新增] 补救方案收藏视图
+class RemedyFavoriteView(APIView):
+    """
+    收藏/取消收藏补救方案
+    POST /remedy/favorite/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        remedy_id = request.data.get("remedy_id")
+        if not remedy_id:
+            return Response({"code": 400, "msg": "缺少 remedy_id 参数"})
+        
+        res = GamificationService.toggle_remedy_favorite(request.user.id, remedy_id)
+        if "error" in res:
+            return Response({"code": 400, "msg": res["error"]})
+        return Response({"code": 200, "msg": "操作成功", "data": res})
+
+# [新增] 兼容前端的挑战进度更新视图
+class ChallengeTaskProgressCompatView(APIView):
+    """
+    更新挑战进度 (兼容前端路径)
+    POST /challenge/tasks/{taskId}/progress/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, taskId):
+        progress_val = request.data.get("progress")
+        if progress_val is None:
+            return Response({"code": 400, "msg": "缺少 progress 参数"})
+            
+        res = GamificationService.update_task_progress_compat(request.user, taskId, progress_val)
+        if "error" in res:
+            return Response({"code": 400, "msg": res["error"]})
+        return Response({"code": 200, "msg": "进度已更新", "data": res})    
