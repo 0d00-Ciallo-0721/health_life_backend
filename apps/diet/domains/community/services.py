@@ -33,7 +33,7 @@ class CommunityService:
         user_ids = list(set([feed.user_id for feed in feeds]))
         
         # 2. 批量查出对应的 User 信息 (带头像、昵称)
-        from apps.users.models_users import User
+        from apps.users.models import User, UserFollow
         from apps.diet.domains.gamification.services import GamificationService
         
         users_qs = User.objects.filter(id__in=user_ids).select_related('profile')
@@ -142,7 +142,7 @@ class CommunityService:
     @staticmethod
     def toggle_follow(follower_id, following_id, action):
         """关注或取消关注系统"""
-        from apps.users.models_users import UserFollow
+        from apps.users.models import User, UserFollow
         if action == 'follow':
             UserFollow.objects.get_or_create(follower_id=follower_id, following_id=following_id)
             return {"status": "followed"}
@@ -154,7 +154,7 @@ class CommunityService:
     @staticmethod
     def get_user_profile(target_user_id, current_user_id=None):
         """获取社交维度的用户公共主页全景视图"""
-        from apps.users.models_users import User, UserFollow
+        from apps.users.models import User, UserFollow
         try:
             target_user = User.objects.select_related('profile').get(id=target_user_id)
         except User.DoesNotExist:

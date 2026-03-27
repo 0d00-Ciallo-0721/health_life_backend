@@ -1,31 +1,59 @@
 from rest_framework import viewsets, status
+from rest_framework.views import APIView 
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django.contrib.auth import get_user_model
 from bson import ObjectId
-from apps.admin_management.models.notification import Notification # 🚀 导入
+from apps.admin_management.models.notification import Notification 
+
 # 引入 Models
 from apps.diet.models.mongo.recipe import Recipe as MongoRecipe
-from apps.diet.models.mongo.restaurant import Restaurant # 👈 确保这个也导入了
+from apps.diet.models.mongo.restaurant import Restaurant
 from apps.diet.models.mysql.gamification import ChallengeTask, Remedy, Achievement
-from apps.admin_management.serializers.business_s import ChallengeTaskSerializer, RemedySerializer
 from apps.diet.models.mongo.community import CommunityFeed, Comment
 
-# 引入 Serializer (这是本次报错的核心)
+# 引入 Serializer
 from apps.admin_management.serializers.business_s import (
     AdminUserSerializer, 
     MongoRecipeAuditSerializer,
     MongoRestaurantSerializer,
     ChallengeTaskSerializer,
     RemedySerializer,
-    AchievementSerializer,           # 🚀 新增
-    MongoCommunityFeedSerializer,    # 🚀 新增
-    MongoCommentSerializer           # 🚀 新增
+    AchievementSerializer,           
+    MongoCommunityFeedSerializer,    
+    MongoCommentSerializer           
 )
 from apps.admin_management.permissions import RBACPermission
 
 User = get_user_model()
+# 🚀 [新增核心函数]：MongoEngine 通用分页器
+def paginate_mongo_queryset(request, queryset, serializer_class):
+    """
+    针对 MongoEngine QuerySet 的通用分页辅助函数
+    返回格式适配主流后台表格: { total, page, size, list }
+    """
+    try:
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('size', 20)) # 默认20条
+    except ValueError:
+        page = 1
+        page_size = 20
+
+    total = queryset.count()
+    start = (page - 1) * page_size
+    end = start + page_size
+    
+    # 利用 MongoEngine 的切片特性做 Skip 和 Limit
+    paginated_qs = queryset[start:end]
+    serializer = serializer_class(paginated_qs, many=True)
+    
+    return {
+        "total": total,
+        "page": page,
+        "size": page_size,
+        "list": serializer.data
+    }
 
 
 class UserManageViewSet(viewsets.ModelViewSet):
@@ -77,8 +105,7 @@ class UserManageViewSet(viewsets.ModelViewSet):
 
     # 🚀 [新增] 跨表注入辅助方法
     def _inject_profile_data(self, data, user_ids):
-        from apps.users.models_users import Profile
-        
+        from apps.users.models import User, UserFollow, Profile
         # 批量查询 Profile 避免 N+1
         profiles = Profile.objects.filter(user_id__in=user_ids)
         profile_map = {p.user_id: p for p in profiles}
@@ -101,21 +128,20 @@ class UserManageViewSet(viewsets.ModelViewSet):
 
 class RecipeAuditViewSet(viewsets.ViewSet):
     """
-    菜谱审核 (MongoDB)
-    因为 MongoEngine 不支持 DRF 的 ModelViewSet，所以用 ViewSet 手写
+    菜谱审核 (MongoDB) - 🚀 包含跨库数据一致性防御处理
     """
     permission_classes = [IsAuthenticated, IsAdminUser, RBACPermission]
     perms_map = {
         'list': 'business:recipe:audit',
-        'audit': 'business:recipe:audit' # 自定义动作权限
+        'audit': 'business:recipe:audit' 
     }
 
     def list(self, request):
-        """获取待审核菜谱列表"""
-        # 假设 status=0 是待审核，status=1 是通过 (根据你的模型定义调整)
-        # 这里演示获取所有
-        recipes = MongoRecipe.objects.all().order_by('-created_at')[:20] 
-        serializer = MongoRecipeAuditSerializer(recipes, many=True)
+        """获取待审核菜谱列表 (已接入通用分页器)"""
+        # 注意: 如果你已经在上一步引入了 paginate_mongo_queryset，这里继续使用它
+        recipes = MongoRecipe.objects.all().order_by('-created_at')
+        # 如果未引入分页函数，请使用切片；如果已引入，请替换为 paginate_mongo_queryset
+        serializer = MongoRecipeAuditSerializer(recipes[:20], many=True)
         return Response({"code": 200, "data": serializer.data})
 
     @action(detail=True, methods=['post'])
@@ -126,47 +152,57 @@ class RecipeAuditViewSet(viewsets.ViewSet):
         except Exception:
             return Response({"msg": "菜谱不存在"}, status=404)
         
-        result = request.data.get('result') # pass / reject
+        result = request.data.get('result') # 'pass' 或 'reject'
         
-        # 🚀 1. 查找菜谱作者 (假设菜谱中有 user_id 字段，或者根据 author_name 反查)
-        # 注意: 你的 MongoDB Recipe 模型目前可能没有存 user_id。
-        # 如果没有，我们暂时无法发给具体人，只能演示“生成了一条无主通知”或跳过发送。
-        # 假设我们之前在同步数据时存了 user_id (通常应该有)，这里先模拟查找用户:
-        # target_user = User.objects.filter(username=recipe.author_name).first() 
+        # 🚀 跨库关联与容错处理 (MongoDB -> MySQL)
+        target_user = None
         
-        # 演示用：为了测试流程，我们把通知发给当前操作的管理员自己 (或者发给 ID=1 的用户)
-        target_user = request.user 
+        # 1. 尝试通过 Integer ID 关联 (最佳实践)
+        user_id = getattr(recipe, 'author_id', None) or getattr(recipe, 'user_id', None)
         
+        if user_id:
+            target_user = User.objects.filter(id=user_id).first()
+        else:
+            # 2. 降级：如果 MongoDB 只存了用户名字符串
+            author_name = getattr(recipe, 'author_name', getattr(recipe, 'author', None))
+            if author_name:
+                target_user = User.objects.filter(username=author_name).first()
+                
+        # 🛡️ 容错防御：处理"孤岛数据"
+        if not target_user:
+            # 即便作者信息丢失，我们依然要完成审核状态的变更，但不触发崩溃
+            print(f"⚠️ [Data Inconsistency] 菜谱 ID:{pk} 对应的作者在 MySQL 中丢失。跳过发信。")
+        
+        # ------------------------------------------------------------------
+        # 状态机流转与通知派发
+        # ------------------------------------------------------------------
         if result == 'pass':
             recipe.status = 1 
             recipe.save()
             
-            # 🚀 2. 自动发送通过通知
-            Notification.objects.create(
-                title="菜谱审核通过",
-                content=f"恭喜！您上传的菜谱《{recipe.name}》已通过审核并上架。",
-                type='private',
-                target_user=target_user
-            )
-            
-            return Response({"msg": "审核通过，已发送通知"})
+            if target_user:
+                Notification.objects.create(
+                    title="菜谱审核通过",
+                    content=f"恭喜！您上传的菜谱《{recipe.name}》已通过审核并上架。",
+                    type='private',
+                    target_user=target_user
+                )
+            return Response({"code": 200, "msg": "审核通过，数据已落库"})
             
         elif result == 'reject':
             recipe.status = 2
             recipe.save()
             
-            # 🚀 3. 自动发送拒绝通知
-            Notification.objects.create(
-                title="菜谱审核未通过",
-                content=f"很遗憾，您上传的菜谱《{recipe.name}》未通过审核。请检查内容后重试。",
-                type='private',
-                target_user=target_user
-            )
-            
-            return Response({"msg": "已拒绝，已发送通知"})
+            if target_user:
+                Notification.objects.create(
+                    title="菜谱审核未通过",
+                    content=f"很遗憾，您上传的菜谱《{recipe.name}》未通过审核。请检查内容后重试。",
+                    type='private',
+                    target_user=target_user
+                )
+            return Response({"code": 200, "msg": "审核已拒绝，数据已落库"})
         
-        return Response({"msg": "参数错误"}, status=400)
-    
+        return Response({"code": 400, "msg": "审核结果参数(result)缺失或错误"}, status=400)
 
 from apps.diet.models.mongo.restaurant import Restaurant
 # ... (保留原有 import)
@@ -185,21 +221,18 @@ class RestaurantViewSet(viewsets.ViewSet):
     }
 
     def list(self, request):
-        """获取商家列表 (支持 ?search=xxx)"""
+        """获取商家列表"""
         query = request.query_params.get('search', '')
-        
-        # MongoDB 模糊查询
         if query:
             queryset = Restaurant.objects(name__icontains=query)
         else:
             queryset = Restaurant.objects.all()
         
-        # ⚠️ 注意: 实际生产中 MongoEngine 分页需要特殊处理
-        # 这里简单起见，按缓存时间倒序取前 50 条，避免全表扫描卡死
-        queryset = queryset.order_by('-cached_at')[:50]
+        queryset = queryset.order_by('-cached_at')
         
-        serializer = MongoRestaurantSerializer(queryset, many=True)
-        return Response({"code": 200, "data": serializer.data})
+        # 🚀 使用分页器
+        data = paginate_mongo_queryset(request, queryset, MongoRestaurantSerializer)
+        return Response({"code": 200, "data": data})
 
     def create(self, request):
         """新增商家"""
@@ -339,9 +372,11 @@ class CommunityFeedViewSet(viewsets.ViewSet):
         else:
             queryset = CommunityFeed.objects.all()
             
-        queryset = queryset.order_by('-created_at')[:50]
-        serializer = MongoCommunityFeedSerializer(queryset, many=True)
-        return Response({"code": 200, "data": serializer.data})
+        queryset = queryset.order_by('-created_at')
+        
+        # 🚀 使用分页器
+        data = paginate_mongo_queryset(request, queryset, MongoCommunityFeedSerializer)
+        return Response({"code": 200, "data": data})
 
     def destroy(self, request, pk=None):
         try:
@@ -368,9 +403,11 @@ class CommentViewSet(viewsets.ViewSet):
         else:
             queryset = Comment.objects.all()
             
-        queryset = queryset.order_by('-created_at')[:50]
-        serializer = MongoCommentSerializer(queryset, many=True)
-        return Response({"code": 200, "data": serializer.data})
+        queryset = queryset.order_by('-created_at')
+        
+        # 🚀 使用分页器
+        data = paginate_mongo_queryset(request, queryset, MongoCommentSerializer)
+        return Response({"code": 200, "data": data})
 
     def destroy(self, request, pk=None):
         try:

@@ -3,6 +3,7 @@ from django.contrib.auth.models import AbstractUser
 from django.conf import settings # ✅ 新增引入
 from django.utils.translation import gettext_lazy as _
 import math
+
 class User(AbstractUser):
     """
     自定义用户模型，支持微信登录
@@ -28,7 +29,7 @@ class User(AbstractUser):
     def __str__(self):
         return self.username
 
-# ✅ Profile 类完全迁移至此
+# ✅ Profile 类完全迁移至此，并包含了完整的业务字段
 class Profile(models.Model):
     """
     用户画像与身体数据 (MySQL)
@@ -42,7 +43,6 @@ class Profile(models.Model):
         ('gain', '增肌'),
     )
 
-    # ✅ [修复] 保留唯一且正确的定义
     user = models.OneToOneField(
         settings.AUTH_USER_MODEL, 
         on_delete=models.CASCADE, 
@@ -53,7 +53,6 @@ class Profile(models.Model):
         default=0,
         verbose_name="性别"
     )
-    
     height = models.FloatField(help_text="cm", default=170)
     weight = models.FloatField(help_text="kg", default=65)
     age = models.IntegerField(default=25)
@@ -83,6 +82,8 @@ class Profile(models.Model):
     
     # [新增] 基础代谢率 (BMR) - 仅做记录，不参与核心逻辑，方便前端展示
     bmr = models.IntegerField(default=0, verbose_name="基础代谢率")    
+    # [新增] 每日饮水目标杯数，默认为前端约定的 8 杯
+    water_goal_cups = models.IntegerField(default=8, verbose_name="每日饮水目标(杯)") 
     
     class Meta:
         db_table = 'users_profile'
@@ -129,3 +130,28 @@ class Profile(models.Model):
         # 每次保存前自动重算
         self.calculate_and_save_daily_limit()
         super().save(*args, **kwargs)
+
+
+class UserFollow(models.Model):
+    """
+    用户关注关系 (MySQL)
+    """
+    follower = models.ForeignKey(
+        settings.AUTH_USER_MODEL, 
+        on_delete=models.CASCADE, 
+        related_name='following_rels', 
+        verbose_name="关注者"
+    )
+    following = models.ForeignKey(
+        settings.AUTH_USER_MODEL, 
+        on_delete=models.CASCADE, 
+        related_name='follower_rels', 
+        verbose_name="被关注者"
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="关注时间")
+
+    class Meta:
+        db_table = 'users_userfollow'
+        verbose_name = '用户关注'
+        # 联合唯一索引：防止重复关注，并提高双向查询性能
+        unique_together = ('follower', 'following')

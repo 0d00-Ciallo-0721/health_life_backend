@@ -6,7 +6,7 @@ from django.db.models import Count
 
 from apps.admin_management.permissions import IsCommunityAdmin
 from apps.diet.models.mongo.community import CommunityFeed, Comment
-from apps.users.models_users import User, UserFollow
+from apps.users.models import User, UserFollow
 
 class CommunityFeedAdminView(APIView):
     """

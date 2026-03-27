@@ -1,10 +1,32 @@
 import json
+import threading
 from django.utils.deprecation import MiddlewareMixin
 from apps.admin_management.models.audit import AuditLog
 
+def save_audit_log_async(user_id, username, method, path, module, ip, req_body, status_code):
+    """
+    [异步工作线程] 实际执行日志持久化操作
+    通过传递基础类型参数(user_id)而非ORM对象，避免跨线程的数据库连接失效问题。
+    """
+    try:
+        AuditLog.objects.create(
+            operator_id=user_id,  # 🚀 使用 _id 赋值，避免重新查询 User 对象
+            operator_name=username,
+            method=method,
+            path=path,
+            module=module,
+            ip_address=ip,
+            body=req_body,
+            response_code=status_code
+        )
+    except Exception as e:
+        # 日志记录失败不应影响主业务，输出到控制台或标准日志收集器
+        print(f"⚠️ [Audit Thread] 异步日志记录失败: {e}")
+
+
 class AuditLogMiddleware(MiddlewareMixin):
     """
-    审计日志中间件：自动记录后台所有的非GET请求
+    审计日志中间件：自动记录后台所有的非GET请求 (已改造为轻量级异步写入)
     """
     def process_response(self, request, response):
         # 1. 仅拦截 /api/admin/ 开头的请求
@@ -15,21 +37,18 @@ class AuditLogMiddleware(MiddlewareMixin):
         if request.method in ['GET', 'HEAD', 'OPTIONS']:
             return response
 
-        # 3. 获取用户信息 (如果没有登录则是 Anonymous)
+        # 3. 提取用户信息基础类型 (极其关键：不能把 request.user 传给子线程)
         user = request.user if request.user.is_authenticated else None
+        user_id = user.id if user else None
+        username = user.username if user else 'Anonymous'
         
-        # 4. 解析请求体 (尝试获取参数快照)
+        # 4. 解析请求体并脱敏
         req_body = {}
         try:
-            # 注意：如果 View 已经读取过 body，这里可能需要特殊处理，但 DRF 通常没问题
-            if request.body:
-                # 简单判断是否是 JSON
-                if request.content_type and 'application/json' in request.content_type:
-                    req_body = json.loads(request.body.decode('utf-8'))
-                else:
-                    req_body = {"msg": "非JSON数据，未记录"}
+            if request.body and request.content_type and 'application/json' in request.content_type:
+                req_body = json.loads(request.body.decode('utf-8'))
         except Exception:
-            req_body = {"msg": "解析失败"}
+            req_body = {"msg": "非JSON数据或解析失败"}
             
         # 🛡️ 敏感字段脱敏
         if isinstance(req_body, dict):
@@ -40,34 +59,21 @@ class AuditLogMiddleware(MiddlewareMixin):
 
         # 5. 获取 IP
         x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
-        if x_forwarded_for:
-            ip = x_forwarded_for.split(',')[0]
-        else:
-            ip = request.META.get('REMOTE_ADDR')
+        ip = x_forwarded_for.split(',')[0] if x_forwarded_for else request.META.get('REMOTE_ADDR')
 
-        # 6. 提取模块名 (简单的 URL 拆分，如 /api/admin/v1/business/users/ -> users)
+        # 6. 提取模块名
         try:
-            # 去掉两头斜杠，分割
             parts = request.path.strip('/').split('/')
-            # 通常倒数第二段是资源名，如 business/users 中的 users
             module = parts[-2] if len(parts) >= 2 else 'unknown'
         except:
             module = 'unknown'
 
-        # 7. 异步入库 (同步写入数据库)
-        try:
-            AuditLog.objects.create(
-                operator=user,
-                operator_name=user.username if user else 'Anonymous',
-                method=request.method,
-                path=request.path,
-                module=module,
-                ip_address=ip,
-                body=req_body,
-                response_code=response.status_code
-            )
-        except Exception as e:
-            # 日志记录失败不应影响主业务
-            print(f"⚠️ [Audit] 日志记录失败: {e}")
+        # 🚀 7. 启动异步守护线程进行 DB 写入，实现接口零阻塞
+        thread = threading.Thread(
+            target=save_audit_log_async,
+            args=(user_id, username, request.method, request.path, module, ip, req_body, response.status_code)
+        )
+        thread.daemon = True  # 设置为守护线程，不阻塞主进程退出
+        thread.start()
 
         return response
