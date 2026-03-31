@@ -4,7 +4,7 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from django.db.models import Sum
 import datetime
-
+from django.shortcuts import get_object_or_404
 from apps.diet.models.mysql.gamification import ChallengeTask, Remedy, UserChallengeProgress, UserRemedyPlan, Achievement, UserAchievement
 from apps.diet.domains.gamification.services import GamificationService
 
@@ -345,3 +345,31 @@ class ChallengeTaskProgressCompatView(APIView):
         if "error" in res:
             return Response({"code": 400, "msg": res["error"]})
         return Response({"code": 200, "msg": "进度已更新", "data": res})    
+    
+class ChallengeTaskDetailView(APIView):
+    """
+    获取单条健康挑战任务的详情
+    GET /challenge/tasks/{pk}/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        # 查询对应的任务数据，如果不存在则返回 404
+        task = get_object_or_404(ChallengeTask, pk=pk)
+        
+        # 组装返回数据结构
+        data = {
+            "id": task.id,
+            "title": task.title,
+            "desc": task.desc,
+            "reward_points": task.reward_points,
+            "condition_code": task.condition_code,
+            "is_active": task.is_active,
+            # 如果模型中有其他需要的字段（如时长、封面图等），可在此处补充
+        }
+        
+        return Response({
+            "code": 200, 
+            "msg": "success", 
+            "data": data
+        })    
