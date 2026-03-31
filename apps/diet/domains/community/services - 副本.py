@@ -19,6 +19,7 @@ class CommunityService:
 
     @staticmethod
     def get_feed_list(page=1, page_size=10, feed_type=None, current_user_id=None):
+        # [修改] 签名新增 current_user_id 用于判断 is_saved。重构了跨库聚合的逻辑！
         skip = (page - 1) * page_size
         query = CommunityFeed.objects
         
@@ -27,8 +28,11 @@ class CommunityService:
             
         feeds = query.order_by('-created_at').skip(skip).limit(page_size)
         
+        # --- 核心难点处理：跨库内存 Join ---
+        # 1. 提取去重后的 MySQL user_id 集合
         user_ids = list(set([feed.user_id for feed in feeds]))
         
+        # 2. 批量查出对应的 User 信息 (带头像、昵称)
         from apps.users.models import User, UserFollow
         from apps.diet.domains.gamification.services import GamificationService
         
@@ -40,17 +44,19 @@ class CommunityService:
                 "id": u.id,
                 "nickname": u.nickname or "未知用户",
                 "avatar": avatar or "",
+                # 3. 注入阶段二实现的个性名片代表徽章
                 "featured_badges": GamificationService.get_user_featured_badges(u.id)
             }
 
+        # 4. 判断当前用户的 is_saved 收藏状态
         saved_feed_ids = set()
         if current_user_id:
             try:
-                # 🚨 核心修复 1：修正导入模型名称及 action 枚举值
-                from apps.diet.models.mysql.preference import UserPreference
+                # 尝试连接第五阶段才正式搭建的 Preference 表，无表时做平滑回落
+                from apps.diet.models.mysql.preference import Preference
                 feed_ids_str = [str(f.id) for f in feeds]
-                saved_feed_ids = set(UserPreference.objects.filter(
-                    user_id=current_user_id, target_type='feed', action='like', target_id__in=feed_ids_str
+                saved_feed_ids = set(Preference.objects.filter(
+                    user_id=current_user_id, target_type='feed', action='save', target_id__in=feed_ids_str
                 ).values_list('target_id', flat=True))
             except ImportError:
                 pass 
@@ -66,8 +72,9 @@ class CommunityService:
                 "likes_count": feed.likes_count,
                 "comments_count": feed.comments_count,
                 "created_at": feed.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                "sport_info": feed.sport_info, 
-                "is_saved": str(feed.id) in saved_feed_ids, 
+                "sport_info": feed.sport_info, # [新增]
+                "is_saved": str(feed.id) in saved_feed_ids, # [新增]
+                # [新增] 替换掉原本简单的 user_id，注入复杂的 user 对象
                 "user": user_dict.get(feed.user_id, {"id": feed.user_id, "nickname": "未知用户", "avatar": "", "featured_badges": []})
             })
         return result
@@ -183,24 +190,27 @@ class CommunityService:
     def get_feed_detail(cls, feed_id: str, current_user_id: int):
         """获取单个帖子详情"""
         from apps.diet.models.mongo.community import CommunityFeed
-        # 🚨 核心修复 2：修正导入模型名称
-        from apps.diet.models.mysql.preference import UserPreference
+        # 假设跨库的偏好存储在 MySQL 中
+        from apps.diet.models.mysql.preference import Preference
         
         try:
             feed = CommunityFeed.objects.get(id=feed_id)
+            # 序列化 MongoDB 文档
             feed_data = feed.to_mongo().to_dict() if hasattr(feed, 'to_mongo') else feed
             feed_data['id'] = str(feed.id)
             if '_id' in feed_data:
                 del feed_data['_id']
             
+            # 计算当前用户的交互状态 (点赞与收藏)
+            # is_liked 可能通过 MongoDB 数组实现，is_saved 可能存在 MySQL 中，这里做通用适配
             feed_data['is_liked'] = current_user_id in getattr(feed, 'likes', [])
             
-            # 🚨 核心修复 3：修正 action 参数为 'like'
-            feed_data['is_saved'] = UserPreference.objects.filter(
+            # 判断收藏状态
+            feed_data['is_saved'] = Preference.objects.filter(
                 user_id=current_user_id, 
                 target_id=feed_id, 
                 target_type='feed', 
-                action='like'
+                action='favorite'
             ).exists()
             
             return feed_data
@@ -211,30 +221,30 @@ class CommunityService:
     def toggle_save(cls, user_id: int, feed_id: str, action: str):
         """切换帖子收藏状态"""
         from apps.diet.models.mongo.community import CommunityFeed
-        # 🚨 核心修复 4：修正导入模型名称
-        from apps.diet.models.mysql.preference import UserPreference
+        from apps.diet.models.mysql.preference import Preference
         from django.utils import timezone
         
         try:
             feed = CommunityFeed.objects.get(id=feed_id)
             
             if action == 'save':
-                # 🚨 核心修复 5：修正 action 参数为 'like'
-                obj, created = UserPreference.objects.get_or_create(
+                # 写入 MySQL (使用统一的 Preference 模型)
+                obj, created = Preference.objects.get_or_create(
                     user_id=user_id, 
                     target_id=feed_id, 
                     target_type='feed',
-                    action='like',
+                    action='favorite',
                     defaults={'created_at': timezone.now()}
                 )
                 if created:
+                    # 更新 MongoDB 收藏计数
                     feed.update(inc__save_count=1)
             else:
-                # 🚨 核心修复 6：修正 action 参数为 'like'
-                deleted, _ = UserPreference.objects.filter(
-                    user_id=user_id, target_id=feed_id, target_type='feed', action='like'
+                deleted, _ = Preference.objects.filter(
+                    user_id=user_id, target_id=feed_id, target_type='feed', action='favorite'
                 ).delete()
                 if deleted:
+                    # 避免计数出现负数
                     if getattr(feed, 'save_count', 0) > 0:
                         feed.update(dec__save_count=1)
                         
