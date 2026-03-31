@@ -27,7 +27,8 @@ from apps.diet.api.v1.gamification import (
     LeaderboardView, AchievementView, 
     RemedySolutionView, RemedyPlanActionView, RemedyUsageHistoryView,
     CarbonFootprintView, CarbonWeeklyView, CarbonSuggestionView, CarbonHistoryView, CarbonAchievementView,
-    RemedyFavoriteView, ChallengeTaskProgressCompatView  # [新增导入]
+    RemedyFavoriteView, ChallengeTaskProgressCompatView, 
+    ChallengeTaskDetailView  # [需在 views 中补充或由已有视图处理]
 )
 from apps.diet.api.v1.tools import (
     AIFoodRecognitionView, AINutritionistView,
@@ -94,6 +95,8 @@ urlpatterns = [
     # ==========================================
     # 挑战与成就
     path('challenge/tasks/', ChallengeTaskView.as_view(), name='challenge_tasks'),
+    # [修复] 补充缺失的挑战任务详情接口
+    path('challenge/tasks/<int:pk>/', ChallengeTaskDetailView.as_view(), name='challenge_task_detail'),
     path('challenge/tasks/<int:challengeId>/join/', ChallengeJoinView.as_view(), name='challenge_join'),
     
     # [新增] 兼容前端调用的任务进度路由
