@@ -89,7 +89,9 @@ class WaterIntake(models.Model):
     """
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='water_records')
     date = models.DateField(default=timezone.now, verbose_name="日期")
-    cups = models.IntegerField(default=0, verbose_name="杯数")
+    total_ml = models.IntegerField(default=0, verbose_name="总饮水(ml)")
+    manual_ml = models.IntegerField(default=0, verbose_name="手动饮水(ml)")
+    food_ml = models.IntegerField(default=0, verbose_name="食物水分(ml)")
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -98,3 +100,17 @@ class WaterIntake(models.Model):
         verbose_name = "饮水记录"
         # 核心约束：保证同一用户每天只有一条数据，配合 update_or_create 实现幂等
         unique_together = ('user', 'date')
+
+class WaterEvent(models.Model):
+    """
+    饮水事件流，用于支持按时间轴展示单次喝水动作、以及清空重置等机制
+    """
+    intake = models.ForeignKey(WaterIntake, on_delete=models.CASCADE, related_name='events')
+    ml = models.IntegerField(verbose_name="变动毫升")
+    source = models.CharField(max_length=20, default='manual', help_text="manual / reset 等")
+    note = models.CharField(max_length=128, null=True, blank=True, verbose_name="附加备注")
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name="发生时间")
+
+    class Meta:
+        db_table = 'diet_waterevent'
+        verbose_name = "饮水事件详情"

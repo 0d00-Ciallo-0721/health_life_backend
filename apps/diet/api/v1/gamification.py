@@ -9,6 +9,7 @@ from apps.diet.models.mysql.gamification import ChallengeTask, Remedy, UserChall
 from apps.diet.domains.gamification.services import GamificationService
 
 from apps.diet.models import ChallengeTask, Remedy, DailyIntake
+from apps.diet.models.mysql.journal import WorkoutRecord
 
 class ChallengeTaskView(APIView):
     """
@@ -67,33 +68,88 @@ class RemedySolutionView(APIView):
             # 尝试用默认 'overeat'
             solutions = Remedy.objects.filter(scenario='overeat').order_by('order')
             
-        data = [{"title": s.title, "desc": s.desc} for s in solutions]
-        return Response({"code": 200, "data": data})
+        data = [{"id": s.id, "name": s.title, "recipe": s.desc, "icon": "💡"} for s in solutions]
+        return Response({"code": 200, "data": {"solutions": data}})
+
+class RemedyTriageView(APIView):
+    """
+    对症下药本地增强接口 (可选)
+    POST /remedy/triage/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        # 暂时只返回兼容外壳，后续可用大模型扩展
+        return Response({
+            "code": 200, 
+            "data": {
+                "matched_symptoms": [],
+                "recommended_solutions": []
+            }
+        })
 
 class CarbonFootprintView(APIView):
     """
     碳足迹 (计算逻辑)
+    GET /carbon/footprint/ 等价于 /carbon/summary/
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # 逻辑计算本身就是基于数据库数据的，不需要额外建表存储“系数”
-        # 除非你想动态配置系数，否则当前逻辑已满足“基于数据库数据”
         date_str = request.query_params.get('date')
         date = datetime.date.fromisoformat(date_str) if date_str else timezone.now().date()
             
         logs = DailyIntake.objects.filter(user=request.user, record_date=date)
         total_cals = logs.aggregate(t=Sum('calories'))['t'] or 0
         
-        carbon_g = int(total_cals * 1.2) # 系数可硬编码
-        trees = round(carbon_g / 60, 1)
+        # 饮食来源的碳排放 (假设每千卡 1.2g CO2) 转换为 kg
+        food_kg = round((total_cals * 1.2) / 1000, 2)
         
+        # 获取运动抵消 (WorkoutRecord)
+        workouts = WorkoutRecord.objects.filter(user=request.user, date=date)
+        sport_duration = sum(w.duration for w in workouts) # 分钟
+        sport_calories = sum(w.calories_burned for w in workouts)
+        
+        # 运动抵消假定每千卡抵消 2g，转为 kg
+        sport_offset_kg = round((sport_calories * 2.0) / 1000, 2)
+        sport_offset_kg_signed = -sport_offset_kg if sport_offset_kg > 0 else 0
+        
+        # 模拟其它数据
+        travel_kg = 0.0
+        package_kg = 0.0
+        
+        total_kg = round(food_kg + travel_kg + package_kg + sport_offset_kg_signed, 2)
+        
+        # 设置 level
+        if total_kg < 2.0:
+            level = 'low'
+        elif total_kg < 5.0:
+            level = 'medium'
+        else:
+            level = 'high'
+            
+        today_workout = None
+        if workouts.exists():
+            today_workout = {
+                "distance_km": round((sport_duration / 60) * 8, 1), # 模拟
+                "duration_sec": sport_duration * 60,
+                "calories_kcal": sport_calories,
+                "offset_kg": sport_offset_kg_signed
+            }
+
         return Response({
             "code": 200, 
             "data": {
                 "date": str(date),
-                "total_carbon_g": carbon_g,
-                "equivalent_trees": trees
+                "total_kg": total_kg,
+                "level": level,
+                "breakdown": {
+                    "food_kg": food_kg,
+                    "travel_kg": travel_kg,
+                    "package_kg": package_kg,
+                    "sport_offset_kg": sport_offset_kg_signed
+                },
+                "today_workout": today_workout
             }
         })
     

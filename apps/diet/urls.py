@@ -15,7 +15,8 @@ from apps.diet.api.v1.discovery import (
 )
 from apps.diet.api.v1.journal import (
     LogIntakeView, DietLogDetailView, WeightView, WorkoutLogView,
-    WorkoutStatsTodayView, WorkoutDetailView, WaterIntakeView
+    WorkoutStatsTodayView, WorkoutDetailView, WaterIntakeView,
+    WaterEventView, WaterResetView
 )
 from apps.diet.api.v1.community import (
     CommunityFeedView, CommunityShareListView, 
@@ -25,7 +26,7 @@ from apps.diet.api.v1.community import (
 from apps.diet.api.v1.gamification import (
     ChallengeTaskView, ChallengeJoinView, ChallengeProgressView, ChallengeProgressActionView,
     LeaderboardView, AchievementView, 
-    RemedySolutionView, RemedyPlanActionView, RemedyUsageHistoryView,
+    RemedySolutionView, RemedyPlanActionView, RemedyUsageHistoryView, RemedyTriageView,
     CarbonFootprintView, CarbonWeeklyView, CarbonSuggestionView, CarbonHistoryView, CarbonAchievementView,
     RemedyFavoriteView, ChallengeTaskProgressCompatView, 
     ChallengeTaskDetailView  # [需在 views 中补充或由已有视图处理]
@@ -109,6 +110,7 @@ urlpatterns = [
     
     # 补救方案
     path('remedy/solutions/', RemedySolutionView.as_view(), name='remedy_solutions'),
+    path('remedy/triage/', RemedyTriageView.as_view(), name='remedy_triage'),
     path('remedy/add-to-plan/', RemedyPlanActionView.as_view(), name='remedy_add_plan'),
     path('remedy/usage-history/', RemedyUsageHistoryView.as_view(), name='remedy_usage_history'),
     
@@ -116,7 +118,8 @@ urlpatterns = [
     path('remedy/favorite/', RemedyFavoriteView.as_view(), name='remedy_favorite'),
     
     # 碳足迹
-    path('carbon/footprint/', CarbonFootprintView.as_view(), name='carbon_footprint'),
+    path('carbon/summary/', CarbonFootprintView.as_view(), name='carbon_summary'),
+    path('carbon/footprint/', CarbonFootprintView.as_view(), name='carbon_footprint_compat'),
     path('carbon/footprint/weekly/', CarbonWeeklyView.as_view(), name='carbon_weekly'),
     path('carbon/footprint/history/', CarbonHistoryView.as_view(), name='carbon_history'),
     path('carbon/suggestions/', CarbonSuggestionView.as_view(), name='carbon_suggestions'),
@@ -133,8 +136,7 @@ urlpatterns = [
     path('ai-nutritionist/upload/', AIAttachmentUploadView.as_view(), name='ai_upload'),
     path('ai-nutritionist/warnings/', AIHealthWarningsView.as_view(), name='ai_health_warnings'),
 
-    # ==========================================
-    # 8. 数据报表 (Analytics Domain)
+    # [新增] 数据报表 (Analytics Domain)
     # ==========================================
     path('summary/', DailySummaryView.as_view(), name='daily_summary'),
     path('report/charts/daily/', DailyChartDataView.as_view(), name='chart_daily'),
@@ -144,7 +146,9 @@ urlpatterns = [
     path('report/calendar/', DietCalendarView.as_view(), name='report_calendar'), 
     path('report/history/', DietHistoryTrendView.as_view(), name='report_history'),
 
-    # [新增] 饮水记录持久化同步路由
-    path('water-intake/', WaterIntakeView.as_view(), name='water_intake'),
+    # [改进] 饮水记录持久化同步路由 (按日期参数化)
+    path('water/<str:date_str>/', WaterIntakeView.as_view(), name='water_intake'),
+    path('water/<str:date_str>/events/', WaterEventView.as_view(), name='water_events'),
+    path('water/<str:date_str>/reset/', WaterResetView.as_view(), name='water_reset'),
 
 ]

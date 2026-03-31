@@ -2,8 +2,8 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from apps.diet.models import WeightRecord
-from apps.diet.models.mysql.journal import WaterIntake # [新增] 导入饮水模型
-
+from django.db.models import Sum
+from apps.diet.models.mysql.journal import WaterIntake, WaterEvent # [新增] 导入饮水模型
 from apps.diet.domains.journal.intake_service import IntakeService
 from apps.diet.domains.journal.workout_service import WorkoutService
 from apps.diet.domains.journal.selectors import JournalSelector
@@ -156,57 +156,146 @@ class WaterIntakeView(APIView):
     """
     饮水记录视图
     GET /diet/water-intake/?date=YYYY-MM-DD
-    POST /diet/water-intake/ {"date": "YYYY-MM-DD", "cups": 8}
     """
     permission_classes = [IsAuthenticated]
 
-    def get(self, request):
-        date_str = request.query_params.get('date')
+    def get(self, request, date_str):
         if not date_str:
             from django.utils import timezone
             date_str = timezone.now().date().strftime('%Y-%m-%d')
             
         record = WaterIntake.objects.filter(user=request.user, date=date_str).first()
         
-        # 联动阶段一：读取用户的饮水目标，若无 profile 或未设置则兜底使用 8
-        goal = 8
+        goal = 2000 # 默认毫升
         if hasattr(request.user, 'profile') and request.user.profile:
-            goal = getattr(request.user.profile, 'water_goal_cups', 8)
+            # 优先读 water_goal_ml, 向下兼容 water_goal_cups
+            if hasattr(request.user.profile, 'water_goal_ml') and request.user.profile.water_goal_ml:
+                goal = request.user.profile.water_goal_ml
+            elif hasattr(request.user.profile, 'water_goal_cups') and request.user.profile.water_goal_cups:
+                goal = request.user.profile.water_goal_cups * 250
             
+        events_data = []
+        if record:
+            events = record.events.all().order_by('created_at')
+            events_data = [{
+                'id': e.id,
+                'ml': e.ml,
+                'ts': int(e.created_at.timestamp() * 1000),
+                'source': e.source,
+                'note': e.note
+            } for e in events]
+
         return Response({
             "code": 200, 
             "msg": "success", 
             "data": {
                 "date": date_str,
-                "cups": record.cups if record else 0,
-                "goal": goal
+                "total_ml": record.total_ml if record else 0,
+                "manual_ml": record.manual_ml if record else 0,
+                "food_ml": record.food_ml if record else 0,
+                "goal_ml": goal,
+                "events": events_data
             }
         })
 
-    def post(self, request):
-        date_str = request.data.get('date')
-        cups = request.data.get('cups')
+
+class WaterEventView(APIView):
+    """
+    饮水事件视图
+    POST /diet/water-intake/events/ {"date": "YYYY-MM-DD", "ml": 250, "source": "manual", "note": ""}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, date_str):
+        ml = request.data.get('ml')
         
-        if not date_str or cups is None:
-            return Response({"code": 400, "msg": "缺少 date 或 cups 参数"}, status=400)
+        if not date_str or ml is None:
+            return Response({"code": 400, "msg": "缺少 date_str 路径参数或 ml 主体参数"}, status=400)
             
         try:
-            cups = int(cups)
+            ml_val = int(ml)
         except ValueError:
-            return Response({"code": 400, "msg": "cups 必须是整数"}, status=400)
+            return Response({"code": 400, "msg": "ml 必须是整数"}, status=400)
             
-        # 核心逻辑：存在则更新，不存在则创建 (幂等写入)
-        record, created = WaterIntake.objects.update_or_create(
+        record, _ = WaterIntake.objects.get_or_create(
             user=request.user,
-            date=date_str,
-            defaults={'cups': cups}
+            date=date_str
         )
+        
+        # 保存事件
+        source = request.data.get('source', 'manual')
+        note = request.data.get('note', '')
+        event = WaterEvent.objects.create(
+            intake=record,
+            ml=ml_val,
+            source=source,
+            note=note
+        )
+        
+        # 更新总计
+        record.manual_ml += ml_val
+        record.total_ml += ml_val
+        record.save()
         
         return Response({
             "code": 200, 
             "msg": "success", 
             "data": {
                 "date": str(record.date),
-                "cups": record.cups
+                "total_ml": record.total_ml,
+                "manual_ml": record.manual_ml,
+                "event": {
+                    "id": event.id,
+                    "ml": event.ml,
+                    "source": event.source,
+                    "ts": int(event.created_at.timestamp() * 1000)
+                }
+            }
+        })
+
+
+class WaterResetView(APIView):
+    """
+    饮水清空视图
+    POST /diet/water-intake/reset/ {"date": "YYYY-MM-DD"}
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, date_str):
+        if not date_str:
+            return Response({"code": 400, "msg": "缺少 date_str 路径参数"}, status=400)
+            
+        record = WaterIntake.objects.filter(
+            user=request.user,
+            date=date_str
+        ).first()
+        
+        if not record:
+             return Response({"code": 200, "msg": "今日无记录可清空"})
+             
+        event = WaterEvent.objects.create(
+            intake=record,
+            ml=-record.manual_ml,
+            source='reset',
+            note='手动清空今日记录'
+        )
+        
+        record.total_ml -= record.manual_ml
+        record.manual_ml = 0
+        record.save()
+
+        return Response({
+            "code": 200, 
+            "msg": "success", 
+            "data": {
+                "date": str(record.date),
+                "total_ml": record.total_ml,
+                "manual_ml": record.manual_ml,
+                "event": {
+                    "id": event.id,
+                    "ml": event.ml,
+                    "source": event.source,
+                    "ts": int(event.created_at.timestamp() * 1000)
+                }
             }
         })

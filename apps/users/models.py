@@ -82,8 +82,10 @@ class Profile(models.Model):
     
     # [新增] 基础代谢率 (BMR) - 仅做记录，不参与核心逻辑，方便前端展示
     bmr = models.IntegerField(default=0, verbose_name="基础代谢率")    
-    # [新增] 每日饮水目标杯数，默认为前端约定的 8 杯
+    # [新增] 每日饮水目标杯数，历史遗留字段向下兼容
     water_goal_cups = models.IntegerField(default=8, verbose_name="每日饮水目标(杯)") 
+    # [新增] 每日饮水目标毫升数
+    water_goal_ml = models.IntegerField(default=2000, verbose_name="每日饮水目标(ml)")
     
     class Meta:
         db_table = 'users_profile'

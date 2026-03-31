@@ -86,6 +86,25 @@ class UserMetaView(APIView):
             follow_count = user.following.count() if hasattr(user, 'following') else 0
             fans_count = user.followers.count() if hasattr(user, 'followers') else 0
 
+        # 4. 获取徽章和代表徽章
+        badges_data = []
+        featured_badges_data = []
+        try:
+            from apps.diet.domains.gamification.services import GamificationService
+            # badges: 只返回已解锁的徽章 summary
+            all_achievements = GamificationService.get_merged_achievements(user)
+            for a in all_achievements:
+                if a.get('unlocked'):
+                    badges_data.append({
+                        "id": a["id"],
+                        "name": a["name"],
+                        "icon": a["icon"]
+                    })
+            
+            featured_badges_data = GamificationService.get_user_featured_badges(user.id)
+        except ImportError:
+            pass
+
         data = {
             "nickname": user.nickname,
             "avatar": profile.avatar.url if profile.avatar else (user.avatar or ""),
@@ -94,11 +113,12 @@ class UserMetaView(APIView):
             "daily_limit": profile.daily_kcal_limit,
             
             "water_goal_cups": profile.water_goal_cups,
+            "water_goal_ml": profile.water_goal_ml,
             "follow_count": follow_count,    # [已接入] 真实关注数
             "fans_count": fans_count,        # [已接入] 真实粉丝数
             "like_count": 0,                 # 待社区发帖获赞统计逻辑就绪后再接入
-            "badges": [],            
-            "featured_badges": []    
+            "badges": badges_data,
+            "featured_badges": featured_badges_data
         }
         return Response({"code": 200, "data": data})
     
@@ -108,13 +128,15 @@ class UserProfileView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request, user_id):
-        target_user = get_object_or_404(User, id=user_id)
-        profile, _ = Profile.objects.get_or_create(user=target_user)
-        serializer = PublicProfileSerializer(profile, context={'request': request})
+        # 统一使用 CommunityService 以确保粉丝数、获赞数和代表勋章等字段存在
+        from apps.diet.domains.community.services import CommunityService
+        data = CommunityService.get_user_profile(user_id, request.user.id)
+        if not data:
+            return Response({"code": 404, "msg": "用户不存在"}, status=404)
         return Response({
             'code': 200,
             'msg': 'success',
-            'data': serializer.data
+            'data': data
         })
 
 
@@ -155,38 +177,19 @@ class UserPostsView(APIView):
         except ValueError:
             page, size = 1, 10
 
-        # 2. 拦截: 社区模块未就绪的防崩溃保护
-        if Post is None:
-            return Response({
-                'code': 200, 
-                'msg': '帖子模块暂未就绪', 
-                'data': {'posts': [], 'total': 0, 'page': page}
-            })
-
-        # 3. 数据库查询 (基于 Django ORM / Djongo 语法)
-        # 注意：此处假定 Post 模型中有 author_id 或 user_id 字段。如果不叫 author_id，请自行调整。
-        query_set = Post.objects.filter(author_id=target_user.id).order_by('-created_at')
-        total = query_set.count()
-
-        # 4. 执行内存/游标分页
-        start = (page - 1) * size
-        end = start + size
-        paginated_posts = query_set[start:end]
-
-        # 5. 序列化数据
-        if PostSerializer:
-            posts_data = PostSerializer(paginated_posts, many=True, context={'request': request}).data
-        else:
-            # Fallback 方案：如果序列化器未定义，执行手动字典转换
-            posts_data = []
-            for p in paginated_posts:
-                posts_data.append({
-                    "id": str(p.id) if hasattr(p, 'id') else None,
-                    "content": getattr(p, 'content', ''),
-                    "like_count": getattr(p, 'like_count', 0),
-                    "comment_count": getattr(p, 'comment_count', 0),
-                    "created_at": getattr(p, 'created_at', None)
-                })
+        # 2. 从 CommunityService 获取该用户的动态
+        from apps.diet.domains.community.services import CommunityService
+        posts_data = CommunityService.get_feed_list(page=page, page_size=size, current_user_id=request.user.id, query_user_id=target_user.id)
+        
+        # 3. 计算 total 等
+        # 注意: CommunityService 目前未返回 total, 这里仅进行近似补齐或可使用真实 count
+        try:
+            from apps.diet.models.mongo.community import CommunityFeed
+            total = CommunityFeed.objects.filter(user_id=target_user.id).count()
+        except Exception:
+            total = len(posts_data) + (page-1)*size
+        
+        has_next = len(posts_data) == size
 
         return Response({
             'code': 200,
@@ -196,6 +199,6 @@ class UserPostsView(APIView):
                 'total': total,
                 'page': page,
                 'size': size,
-                'has_next': end < total
+                'has_next': has_next
             }
         })

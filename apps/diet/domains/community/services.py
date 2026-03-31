@@ -18,10 +18,13 @@ class CommunityService:
         return str(feed.id)
 
     @staticmethod
-    def get_feed_list(page=1, page_size=10, feed_type=None, current_user_id=None):
+    def get_feed_list(page=1, page_size=10, feed_type=None, current_user_id=None, query_user_id=None):
         skip = (page - 1) * page_size
         query = CommunityFeed.objects
         
+        if query_user_id:
+            query = query.filter(user_id=query_user_id)
+            
         if feed_type:
             query = query.filter(feed_type=feed_type)
             
@@ -50,7 +53,7 @@ class CommunityService:
                 from apps.diet.models.mysql.preference import UserPreference
                 feed_ids_str = [str(f.id) for f in feeds]
                 saved_feed_ids = set(UserPreference.objects.filter(
-                    user_id=current_user_id, target_type='feed', action='like', target_id__in=feed_ids_str
+                    user_id=current_user_id, target_type='feed', action='save', target_id__in=feed_ids_str
                 ).values_list('target_id', flat=True))
             except ImportError:
                 pass 
@@ -195,13 +198,33 @@ class CommunityService:
             
             feed_data['is_liked'] = current_user_id in getattr(feed, 'likes', [])
             
-            # 🚨 核心修复 3：修正 action 参数为 'like'
+            # 修正 action
             feed_data['is_saved'] = UserPreference.objects.filter(
                 user_id=current_user_id, 
                 target_id=feed_id, 
                 target_type='feed', 
-                action='like'
+                action='save'
             ).exists()
+            
+            # 填充 user 信息，同 get_feed_list
+            from apps.users.models import User
+            from apps.diet.domains.gamification.services import GamificationService
+            try:
+                author = User.objects.select_related('profile').get(id=feed.user_id)
+                avatar = author.profile.avatar.url if (hasattr(author, 'profile') and author.profile and author.profile.avatar) else getattr(author, 'avatar', '')
+                feed_data['user'] = {
+                    "id": author.id,
+                    "nickname": author.nickname or "未知用户",
+                    "avatar": avatar or "",
+                    "featured_badges": GamificationService.get_user_featured_badges(author.id)
+                }
+            except User.DoesNotExist:
+                feed_data['user'] = {
+                    "id": feed.user_id,
+                    "nickname": "未知用户",
+                    "avatar": "",
+                    "featured_badges": []
+                }
             
             return feed_data
         except Exception as e:
@@ -219,20 +242,18 @@ class CommunityService:
             feed = CommunityFeed.objects.get(id=feed_id)
             
             if action == 'save':
-                # 🚨 核心修复 5：修正 action 参数为 'like'
                 obj, created = UserPreference.objects.get_or_create(
                     user_id=user_id, 
                     target_id=feed_id, 
                     target_type='feed',
-                    action='like',
+                    action='save',
                     defaults={'created_at': timezone.now()}
                 )
                 if created:
                     feed.update(inc__save_count=1)
             else:
-                # 🚨 核心修复 6：修正 action 参数为 'like'
                 deleted, _ = UserPreference.objects.filter(
-                    user_id=user_id, target_id=feed_id, target_type='feed', action='like'
+                    user_id=user_id, target_id=feed_id, target_type='feed', action='save'
                 ).delete()
                 if deleted:
                     if getattr(feed, 'save_count', 0) > 0:
