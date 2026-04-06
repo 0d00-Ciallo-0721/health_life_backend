@@ -13,7 +13,7 @@ class CommunityFeedView(APIView):
         page_size = int(request.query_params.get('page_size', 10))
         # [修改] 传递 request.user.id 进去用于 is_saved 状态判断
         data = CommunityService.get_feed_list(page, page_size, current_user_id=request.user.id)
-        return Response({"code": 200, "msg": "success", "data": data})
+        return Response({"code": 200, "msg": "success", "data": {"list": data}})
     
     def post(self, request):
         # 兼容 /share/ 和 /feed/ POST
@@ -29,7 +29,7 @@ class CommunityShareListView(APIView):
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 10))
         data = CommunityService.get_feed_list(page, page_size, feed_type=self.feed_type)
-        return Response({"code": 200, "msg": "success", "data": data})
+        return Response({"code": 200, "msg": "success", "data": {"list": data}})
 
 class CommunityLikeView(APIView):
     """点赞与取消: POST/DELETE /diet/community/feed/{feedId}/like/"""

@@ -22,6 +22,12 @@ class FridgeItemListView(ListCreateAPIView):
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
         
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        self.perform_create(serializer)
+        return Response({"code": 200, "msg": "success", "data": {"item": serializer.data}})
+        
     def list(self, request, *args, **kwargs):
         queryset = self.filter_queryset(self.get_queryset())
         page = self.paginate_queryset(queryset)

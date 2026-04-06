@@ -234,3 +234,126 @@ class AIService:
             return {"error": "AI返回的数据格式无法解析"}
         except Exception as e:
             return {"error": f"食材识别接口调用失败: {str(e)}"}
+
+    # [新增] 健康预警生成
+    @staticmethod
+    def generate_health_warnings(profile, recent_logs_summary):
+        """
+        根据用户最近饮食与档案，生成健康预警
+        recent_logs_summary: 汇总的近期饮食数据字符串，用于 prompt 注入
+        """
+        prompt = f"""
+        作为专业AI营养师，请基于以下用户近期（近3天）的饮食情况，发现其中的不健康趋势，并给出1到2条预警。
+        如果没有大问题，可以不返回预警或返回一条温和的建议。
+        
+        用户身体档案：目标【{getattr(profile, 'goal_type', '健康')}】，每日目标热量【{getattr(profile, 'daily_kcal_limit', 2000)}】大卡
+        近期饮食总结：
+        {recent_logs_summary}
+        
+        必须严格按照JSON数组格式返回，格式如下：
+        [
+            {{
+                "id": 1,
+                "title": "预警短标题(如:碳水连续超标)",
+                "desc": "详细的预警或建议说明",
+                "level": "warning" 或 "danger" 或 "info"
+            }}
+        ]
+        """
+        
+        try:
+            client = AIService.get_client()
+            response = client.chat.completions.create(
+                model=settings.SILICONFLOW_MODEL,
+                messages=[
+                    {"role": "system", "content": "你是一位敏锐的临床营养师。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3,
+                max_tokens=500
+            )
+            content = response.choices[0].message.content
+            cleaned = AIService._clean_json_response(content)
+            return json.loads(cleaned)
+        except Exception as e:
+            # 降级处理
+            return []
+
+    # [新增] 环保低碳建议生成
+    @staticmethod
+    def generate_carbon_suggestions(recent_logs_summary):
+        """
+        生成环保建议
+        """
+        prompt = f"""
+        作为提倡低碳环保的公共营养师，请根据用户的饮食情况给出2条环保低碳饮食建议。
+        例如：如肉类过多可建议多食植物蛋白，如餐食量大可建议光盘行动。
+        
+        近期饮食总结：
+        {recent_logs_summary}
+        
+        必须返回纯JSON数组，格式如下：
+        [
+            {{
+                "title": "建议标题",
+                "desc": "具体说明"
+            }}
+        ]
+        """
+        try:
+            client = AIService.get_client()
+            response = client.chat.completions.create(
+                model=settings.SILICONFLOW_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
+                max_tokens=400
+            )
+            content = response.choices[0].message.content
+            cleaned = AIService._clean_json_response(content)
+            res = json.loads(cleaned)
+            if not isinstance(res, list) or len(res) == 0:
+                raise ValueError("Format error")
+            return res
+        except Exception:
+            return [{"title": "多吃植物蛋白", "desc": "饮食中增加豆制品不仅健康，更能大幅减少碳足迹。"}, {"title": "光盘行动", "desc": "减少厨余垃圾是降低个人碳排放的最直接方式。"}]
+
+    # [新增] 补救方案智能分诊
+    @staticmethod
+    def triage_symptoms(symptoms_text, available_remedies_json):
+        """
+        传入用户自然语言描述的症状，以及数据库支持的 remedies，让 AI 返回匹配的 ID
+        """
+        prompt = f"""
+        你是一个健康顾问。用户正在寻找缓解身体不适的饮食补救方案。
+        用户的症状或诉求是："{symptoms_text}"
+
+        数据库中可用的补救方案列表如下（JSON）：
+        {available_remedies_json}
+
+        请选择1至3个最对症的方案，并给出推荐理由。
+        严格返回纯JSON对象，格式要求：
+        {{
+            "matched_symptoms": ["提取出的用户症状1", "症状2"],
+            "recommended_solutions": [
+                {{
+                    "remedy_id": 对应方案的整数ID,
+                    "reason": "你推荐这个方案的医学或营养学解释（简短）"
+                }}
+            ]
+        }}
+        """
+        
+        try:
+            client = AIService.get_client()
+            response = client.chat.completions.create(
+                model=settings.SILICONFLOW_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=500
+            )
+            content = response.choices[0].message.content
+            cleaned = AIService._clean_json_response(content)
+            return json.loads(cleaned)
+        except Exception:
+            # 返回兼容格式的外壳
+            return {"matched_symptoms": ["肠胃不适(AI判断失败降级)"], "recommended_solutions": []}

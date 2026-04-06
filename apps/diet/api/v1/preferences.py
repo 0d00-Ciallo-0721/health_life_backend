@@ -14,6 +14,11 @@ class ProfileUpdateView(RetrieveUpdateAPIView):
     def get_object(self):
         obj, _ = Profile.objects.get_or_create(user=self.request.user)
         return obj
+
+    def post(self, request, *args, **kwargs):
+        # 兼容小程序的 POST 请求
+        return self.partial_update(request, *args, **kwargs)
+
     def perform_update(self, serializer):
         instance = serializer.save()
         instance.calculate_and_save_daily_limit()

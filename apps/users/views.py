@@ -89,6 +89,7 @@ class UserMetaView(APIView):
         # 4. 获取徽章和代表徽章
         badges_data = []
         featured_badges_data = []
+        like_count = 0
         try:
             from apps.diet.domains.gamification.services import GamificationService
             # badges: 只返回已解锁的徽章 summary
@@ -102,6 +103,9 @@ class UserMetaView(APIView):
                     })
             
             featured_badges_data = GamificationService.get_user_featured_badges(user.id)
+            from apps.diet.domains.community.services import CommunityService
+            community_profile = CommunityService.get_user_profile(user.id, user.id)
+            like_count = community_profile.get("like_count", 0) if community_profile else 0
         except ImportError:
             pass
 
@@ -116,7 +120,7 @@ class UserMetaView(APIView):
             "water_goal_ml": profile.water_goal_ml,
             "follow_count": follow_count,    # [已接入] 真实关注数
             "fans_count": fans_count,        # [已接入] 真实粉丝数
-            "like_count": 0,                 # 待社区发帖获赞统计逻辑就绪后再接入
+            "like_count": like_count,        # [已接入] 从 MongoDB 真实聚合而来
             "badges": badges_data,
             "featured_badges": featured_badges_data
         }
@@ -195,7 +199,7 @@ class UserPostsView(APIView):
             'code': 200,
             'msg': 'success',
             'data': {
-                'posts': posts_data,
+                'list': posts_data,
                 'total': total,
                 'page': page,
                 'size': size,

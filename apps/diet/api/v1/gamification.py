@@ -5,6 +5,9 @@ from django.utils import timezone
 from django.db.models import Sum
 import datetime
 from django.shortcuts import get_object_or_404
+import json
+from django.core.cache import cache
+from apps.diet.domains.tools.ai_service import AIService
 from apps.diet.models.mysql.gamification import ChallengeTask, Remedy, UserChallengeProgress, UserRemedyPlan, Achievement, UserAchievement
 from apps.diet.domains.gamification.services import GamificationService
 
@@ -25,21 +28,35 @@ class ChallengeTaskView(APIView):
         results = []
         today = timezone.now().date()
         
-        # 2. 动态计算状态 (逻辑仍需代码处理，但规则来自 DB)
+        # 预取今日数据，减少循环查库
+        today_intakes = list(DailyIntake.objects.filter(user=request.user, record_date=today))
+        today_workouts = list(WorkoutRecord.objects.filter(user=request.user, date=today))
+        
+        # 2. 动态计算状态
         for t in tasks_db:
             status = 'pending'
             
+            # 判断逻辑
             if t.condition_code == 'log_breakfast':
-                # 检查是否记录早餐
-                has = DailyIntake.objects.filter(
-                    user=request.user, record_date=today, meal_time='breakfast'
-                ).exists()
+                has = any(log.meal_time == 'breakfast' for log in today_intakes)
                 if has: status = 'completed'
                 
+            elif t.condition_code == 'log_dinner':
+                has = any(log.meal_time == 'dinner' for log in today_intakes)
+                if has: status = 'completed'
+                
+            elif t.condition_code == 'workout':
+                if len(today_workouts) > 0: status = 'completed'
+                
             elif t.condition_code == 'no_sugar':
-                # 简单逻辑：还没记录就算进行中，记录了含糖则失败 (这里简化为手动打卡或一直 pending)
-                # 实际业务可能需要更复杂的判定
-                pass 
+                # 简单试探：看看食物名称里有没有带糖，或者带甜点的
+                bad_words = ['糖', '奶茶', '蛋糕', '甜品', '饼干', '巧克力']
+                has_sugar = any(any(bw in str(log.food_name) for bw in bad_words) for log in today_intakes)
+                # 尚未吃含糖食品，并且吃了其他饭才算成功，为了防作弊暂且简化为：
+                if len(today_intakes) > 0 and not has_sugar:
+                    status = 'completed'
+                elif has_sugar:
+                    status = 'failed'
                 
             results.append({
                 "id": t.id,
@@ -79,12 +96,36 @@ class RemedyTriageView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        # 暂时只返回兼容外壳，后续可用大模型扩展
+        symptoms = request.data.get('symptoms', '')
+        if not symptoms:
+            return Response({"code": 400, "msg": "描述哪怕几个字也好呀"})
+
+        # 取出所有备选方案喂给大模型
+        remedies = Remedy.objects.all()
+        remedy_list = [{"id": r.id, "title": r.title, "scenario": r.scenario} for r in remedies]
+        
+        ai_result = AIService.triage_symptoms(symptoms, json.dumps(remedy_list, ensure_ascii=False))
+        
+        # 将推荐的 ID 映射回完整的解决方案数据返回给前端
+        final_solutions = []
+        for rec in ai_result.get('recommended_solutions', []):
+            try:
+                r_obj = Remedy.objects.get(id=rec.get('remedy_id'))
+                final_solutions.append({
+                    "id": r_obj.id,
+                    "name": r_obj.title,
+                    "recipe": r_obj.desc,
+                    "icon": r_obj.icon or "💡",
+                    "reason": rec.get('reason', '')
+                })
+            except Remedy.DoesNotExist:
+                continue
+
         return Response({
             "code": 200, 
             "data": {
-                "matched_symptoms": [],
-                "recommended_solutions": []
+                "matched_symptoms": ai_result.get('matched_symptoms', []),
+                "recommended_solutions": final_solutions
             }
         })
 
@@ -246,13 +287,58 @@ class CarbonWeeklyView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        start_date = request.query_params.get('start_date')
-        end_date = request.query_params.get('end_date')
-        # 这里接入具体的周统计逻辑，暂时返回默认结构
+        start_date_str = request.query_params.get('start_date')
+        end_date_str = request.query_params.get('end_date')
+
+        if not start_date_str or not end_date_str:
+            today = timezone.now().date()
+            start_date = today - datetime.timedelta(days=today.weekday())
+            end_date = start_date + datetime.timedelta(days=6)
+        else:
+            try:
+                start_date = datetime.date.fromisoformat(start_date_str)
+                end_date = datetime.date.fromisoformat(end_date_str)
+            except ValueError:
+                return Response({"code": 400, "msg": "日期格式错误"})
+
+        # 获取7天所有数据并在内存组装，防止某些数据库的 SQL 聚合问题
+        intakes = DailyIntake.objects.filter(user=request.user, record_date__range=(start_date, end_date))
+        workouts = WorkoutRecord.objects.filter(user=request.user, date__range=(start_date, end_date))
+        
+        daily_food_kg = {}
+        for l in intakes:
+            d_str = str(l.record_date)
+            # 同样转换规则: 1.2g CO2 per kcal
+            daily_food_kg[d_str] = daily_food_kg.get(d_str, 0) + (l.calories or 0) * 1.2 / 1000
+
+        daily_sport_offset = {}
+        for w in workouts:
+            d_str = str(w.date)
+            # 2.0g CO2 per kcal burned
+            daily_sport_offset[d_str] = daily_sport_offset.get(d_str, 0) + (w.calories_burned or 0) * 2.0 / 1000
+
+        total_saved = 0.0
+        daily_data = []
+        
+        num_days = (end_date - start_date).days + 1
+        for i in range(num_days):
+            curr = start_date + datetime.timedelta(days=i)
+            c_str = str(curr)
+            # 我们假设如果一个人一天吃少于他应有的碳排放，就叫saved。
+            # 这里简单起见：运动 offset 视作 saved，基础 saved = random mock based on real formula
+            
+            f_kg = daily_food_kg.get(c_str, 0)
+            offset = daily_sport_offset.get(c_str, 0)
+            
+            # 这里为了模拟好看的图表，将 offset 直接叠加
+            val_kg = f_kg - offset if f_kg > 0 else 0 
+            daily_data.append({"date": c_str, "val": round(val_kg, 2)})
+            total_saved += offset # 将运动拯救的碳排放累加
+            
         data = {
-            "total_saved": 15.4,  # kg
-            "trend": "down",
-            "daily_data": [{"date": start_date, "val": 2.1}]
+            "total_saved": round(total_saved, 2),
+            "trend": "up" if total_saved > 2 else "down",
+            "daily_data": daily_data
         }
         return Response({"code": 200, "msg": "success", "data": data})
 
@@ -261,11 +347,25 @@ class CarbonSuggestionView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # 写死的规则策略 (后续可接大模型)
-        suggestions = [
-            {"title": "多吃植物蛋白", "desc": "今日肉类摄入较高，建议明后天尝试豆制品。"},
-            {"title": "光盘行动", "desc": "减少厨余垃圾能有效降低碳排放。"}
-        ]
+        cache_key = f"carbon_suggestions_{request.user.id}"
+        cached = cache.get(cache_key)
+        if cached:
+            return Response({"code": 200, "msg": "success", "data": cached})
+            
+        # 给模型提供一点最近3天的饮食信息
+        three_days_ago = timezone.now().date() - datetime.timedelta(days=3)
+        logs = DailyIntake.objects.filter(user=request.user, record_date__gte=three_days_ago)
+        
+        summary_lines = []
+        for log in logs:
+            summary_lines.append(f"{log.food_name} ({log.calories}kcal)")
+            
+        recent_str = "无" if not summary_lines else ", ".join(summary_lines)
+        
+        suggestions = AIService.generate_carbon_suggestions(recent_str)
+        if suggestions:
+            cache.set(cache_key, suggestions, timeout=43200)
+
         return Response({"code": 200, "msg": "success", "data": suggestions})        
     
 

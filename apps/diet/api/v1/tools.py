@@ -4,6 +4,8 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.parsers import MultiPartParser
 from django.db.models import Sum
 from django.utils import timezone
+from django.core.cache import cache
+import datetime
 
 from apps.diet.domains.tools.ai_service import AIService
 from apps.diet.models import DailyIntake
@@ -147,20 +149,35 @@ class AIHealthWarningsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        # 实际业务中，这里可以通过查询用户近期的 DailyIntake 记录，发现异常值（如连天超标、不吃早饭等）。
-        # 为了不阻塞联调，先返回基于一定业务逻辑构造的静态提示池。
-        warnings = [
-            {
-                "id": 1,
-                "title": "膳食纤维不足",
-                "desc": "您最近2天的蔬菜摄入量偏低，可能会影响肠道健康，建议今天安排一份清炒绿叶菜。",
-                "level": "warning"  # warning, danger, info
-            },
-            {
-                "id": 2,
-                "title": "碳水连续超标",
-                "desc": "监测到您昨日主食比例偏高，为了减脂目标，今天请注意控制米面摄入。",
-                "level": "danger"
-            }
-        ]
+        cache_key = f"health_warnings_{request.user.id}"
+        cached_warnings = cache.get(cache_key)
+        if cached_warnings:
+            return Response({"code": 200, "msg": "success", "data": cached_warnings})
+
+        # 获取近3天饮食数据
+        three_days_ago = timezone.now().date() - datetime.timedelta(days=3)
+        logs = DailyIntake.objects.filter(user=request.user, record_date__gte=three_days_ago)
+        
+        if not logs.exists():
+            return Response({"code": 200, "msg": "success", "data": []})
+
+        # 构建简要数据字符串
+        summary_lines = []
+        for log in logs:
+            cals = log.calories or 0
+            macros = log.macros or {}
+            c = macros.get('carbohydrates', macros.get('carb', 0))
+            p = macros.get('protein', 0)
+            f = macros.get('fat', 0)
+            summary_lines.append(f"{log.record_date} {log.get_meal_time_display()}: {log.food_name} ({cals}kcal, 碳水{c}g, 蛋白{p}g, 脂肪{f}g)")
+        
+        recent_logs_summary = "\n".join(summary_lines)
+        profile = getattr(request.user, 'profile', None)
+
+        warnings = AIService.generate_health_warnings(profile, recent_logs_summary)
+        
+        if warnings:
+            # 缓存12小时
+            cache.set(cache_key, warnings, timeout=43200)
+
         return Response({"code": 200, "msg": "success", "data": warnings})    
