@@ -1,0 +1,8 @@
+# 配置文件
+.env
+
+# 虚拟环境文件夹
+venv/
+
+# 启动指令脚本
+start_tunnel.bat

@@ -67,7 +67,8 @@ class AIService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": [
                         {"type": "text", "text": "分析这张图片"},
-                        {"type": "image_url", "image_url": {"url": base64_image}}
+                        # [核心修改]: 补全标准的 Data URI Base64 前缀，修复大模型接口因解析图片失败导致的 500 崩溃
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
                     ]}
                 ],
                 temperature=0.1,

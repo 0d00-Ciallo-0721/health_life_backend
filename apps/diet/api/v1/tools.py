@@ -28,7 +28,9 @@ class AIFoodRecognitionView(APIView):
         res = AIService.recognize_food(request.FILES['image'])
         
         if "error" in res:
-            return Response({"code": 500, "msg": res['error']}, status=500)
+            # [核心修改]: 移除 status=500，使用默认的 HTTP 200 响应。
+            # 依靠 JSON 体中的 "code": 500 告知前端发生错误，避免微信小程序因非 2xx 状态码直接进入 fail 回调抛出识别异常。
+            return Response({"code": 500, "msg": res['error']})
             
         return Response({"code": 200, "data": res})
 
