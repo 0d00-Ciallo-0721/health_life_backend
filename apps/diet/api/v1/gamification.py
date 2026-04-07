@@ -90,21 +90,35 @@ class RemedySolutionView(APIView):
 
 class RemedyTriageView(APIView):
     """
-    对症下药本地增强接口 (可选)
+    对症下药智能分诊接口
     POST /remedy/triage/
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        symptoms = request.data.get('symptoms', '')
-        if not symptoms:
-            return Response({"code": 400, "msg": "描述哪怕几个字也好呀"})
+        action_text = request.data.get('action_text', '')
+        custom_keywords = request.data.get('custom_keywords', [])
+        symptom_ids = request.data.get('symptom_ids', []) # 预留字段，可结合后续映射表使用
+        
+        if not action_text and not custom_keywords and not symptom_ids:
+            return Response({"code": 400, "msg": "请提供至少一项症状描述或关键词"})
 
         # 取出所有备选方案喂给大模型
+        # (控制传入的字段，避免 token 浪费，同时包含 desc 摘要帮助模型判断)
         remedies = Remedy.objects.all()
-        remedy_list = [{"id": r.id, "title": r.title, "scenario": r.scenario} for r in remedies]
+        remedy_list = [{
+            "id": r.id, 
+            "title": r.title, 
+            "scenario": r.scenario, 
+            "desc": r.desc[:80] + "..." if len(r.desc) > 80 else r.desc
+        } for r in remedies]
         
-        ai_result = AIService.triage_symptoms(symptoms, json.dumps(remedy_list, ensure_ascii=False))
+        # 调用大模型智能分诊引擎
+        ai_result = AIService.triage_symptoms(
+            action_text=action_text,
+            custom_keywords=custom_keywords,
+            available_remedies_json=json.dumps(remedy_list, ensure_ascii=False)
+        )
         
         # 将推荐的 ID 映射回完整的解决方案数据返回给前端
         final_solutions = []
@@ -112,89 +126,151 @@ class RemedyTriageView(APIView):
             try:
                 r_obj = Remedy.objects.get(id=rec.get('remedy_id'))
                 final_solutions.append({
-                    "id": r_obj.id,
+                    "id": str(r_obj.id),
                     "name": r_obj.title,
                     "recipe": r_obj.desc,
-                    "icon": r_obj.icon or "💡",
+                    "icon": getattr(r_obj, 'icon', '💡'),
                     "reason": rec.get('reason', '')
                 })
             except Remedy.DoesNotExist:
                 continue
 
+        # 格式化识别出的症状，符合前端 {id, score, reason} 结构契约
+        matched_symptoms = ai_result.get('matched_symptoms', [])
+        formatted_symptoms = [
+            {"id": f"sym_{i}", "score": 95, "reason": sym} 
+            for i, sym in enumerate(matched_symptoms)
+        ]
+
         return Response({
             "code": 200, 
+            "msg": "success",
             "data": {
-                "matched_symptoms": ai_result.get('matched_symptoms', []),
+                "matched_symptoms": formatted_symptoms,
                 "recommended_solutions": final_solutions
             }
         })
 
 class CarbonFootprintView(APIView):
     """
-    碳足迹 (计算逻辑)
-    GET /carbon/footprint/ 等价于 /carbon/summary/
+    绿色足迹 (最小化闭环)
+    GET /carbon/summary/ (向下兼容 /carbon/footprint/)
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         date_str = request.query_params.get('date')
-        date = datetime.date.fromisoformat(date_str) if date_str else timezone.now().date()
-            
+        if not date_str:
+            date = timezone.now().date()
+            date_str = str(date)
+        else:
+            try:
+                date = datetime.date.fromisoformat(date_str)
+            except ValueError:
+                date = timezone.now().date()
+                date_str = str(date)
+                
+        # 1. 饮食碳排: 假定 1.2g CO2e / kcal，转换为 kg
         logs = DailyIntake.objects.filter(user=request.user, record_date=date)
-        total_cals = logs.aggregate(t=Sum('calories'))['t'] or 0
-        
-        # 饮食来源的碳排放 (假设每千卡 1.2g CO2) 转换为 kg
+        total_cals = sum([log.calories or 0 for log in logs])
         food_kg = round((total_cals * 1.2) / 1000, 2)
         
-        # 获取运动抵消 (WorkoutRecord)
+        # 2. 运动抵消: 假定每消耗 1kcal 抵消 2.0g CO2e，转换为 kg (前端要求负数展示)
         workouts = WorkoutRecord.objects.filter(user=request.user, date=date)
-        sport_duration = sum(w.duration for w in workouts) # 分钟
-        sport_calories = sum(w.calories_burned for w in workouts)
+        sport_duration = sum([w.duration or 0 for w in workouts]) # 汇总分钟
+        sport_calories = sum([w.calories_burned or 0 for w in workouts])
         
-        # 运动抵消假定每千卡抵消 2g，转为 kg
-        sport_offset_kg = round((sport_calories * 2.0) / 1000, 2)
-        sport_offset_kg_signed = -sport_offset_kg if sport_offset_kg > 0 else 0
+        sport_offset_kg_positive = round((sport_calories * 2.0) / 1000, 2)
+        sport_offset_kg = -sport_offset_kg_positive if sport_offset_kg_positive > 0 else 0.0
         
-        # 模拟其它数据
+        # 3. 模拟额外维度（保持扩展性）
         travel_kg = 0.0
         package_kg = 0.0
         
-        total_kg = round(food_kg + travel_kg + package_kg + sport_offset_kg_signed, 2)
-        
-        # 设置 level
-        if total_kg < 2.0:
+        # 4. 计算总量与评级
+        total_kg = round(food_kg + travel_kg + package_kg + sport_offset_kg, 2)
+        if total_kg < 0:
+            total_kg = 0.0  # 总排放不为负
+            
+        if total_kg == 0 and food_kg == 0:
+            level = 'low' # 当日无记录降级
+        elif total_kg <= 2.5:
             level = 'low'
-        elif total_kg < 5.0:
+        elif total_kg <= 5.0:
             level = 'medium'
         else:
             level = 'high'
             
+        # 5. 构建运动卡片结构
         today_workout = None
         if workouts.exists():
             today_workout = {
-                "distance_km": round((sport_duration / 60) * 8, 1), # 模拟
+                "distance_km": round((sport_duration / 60) * 8, 1), # 结合时长估算个距离配速
                 "duration_sec": sport_duration * 60,
                 "calories_kcal": sport_calories,
-                "offset_kg": sport_offset_kg_signed
+                "offset_kg": sport_offset_kg
             }
 
+        # 严格遵守契约返回
         return Response({
             "code": 200, 
+            "msg": "success",
             "data": {
-                "date": str(date),
+                "date": date_str,
                 "total_kg": total_kg,
                 "level": level,
                 "breakdown": {
                     "food_kg": food_kg,
                     "travel_kg": travel_kg,
                     "package_kg": package_kg,
-                    "sport_offset_kg": sport_offset_kg_signed
+                    "sport_offset_kg": sport_offset_kg
                 },
                 "today_workout": today_workout
             }
         })
     
 
+class UserFeaturedBadgeView(APIView):
+    """
+    配置个性名片代表徽章
+    POST /achievements/featured/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        achievement_ids = request.data.get('achievement_ids', [])
+        
+        if not isinstance(achievement_ids, list):
+            return Response({"code": 400, "msg": "achievement_ids 必须是一个数组格式"})
+            
+        if len(achievement_ids) > 3:
+            return Response({"code": 400, "msg": "最多只能设置3个代表徽章"})
+            
+        from apps.diet.models.mysql.gamification import UserFeaturedBadge, Achievement
+        from django.db import transaction
+        
+        # 校验传入的ID是否真实存在
+        valid_achievements = Achievement.objects.filter(id__in=achievement_ids)
+        valid_ids = [a.id for a in valid_achievements]
+        
+        with transaction.atomic():
+            # 先清空该用户之前的代表徽章
+            UserFeaturedBadge.objects.filter(user=request.user).delete()
+            
+            # 按前端传来的数组顺序插入新数据，记录 sort_order
+            new_badges = []
+            for index, a_id in enumerate(achievement_ids):
+                if int(a_id) in valid_ids:
+                    new_badges.append(UserFeaturedBadge(
+                        user=request.user,
+                        achievement_id=a_id,
+                        sort_order=index
+                    ))
+            
+            if new_badges:
+                UserFeaturedBadge.objects.bulk_create(new_badges)
+                
+        return Response({"code": 200, "msg": "名片徽章配置成功"})
 
 # [新增] 加入挑战视图
 class ChallengeJoinView(APIView):
@@ -254,16 +330,42 @@ class LeaderboardView(APIView):
 
 # [新增] 成就视图
 class AchievementView(APIView):
-    """我的成就列表: GET /achievements/"""
+    """
+    我的成就/荣誉墙列表
+    GET /achievements/
+    """
     permission_classes = [IsAuthenticated]
 
-    # [修改] 替换原有逻辑，对接 GamificationService 合并视图
     def get(self, request):
-        from apps.diet.domains.gamification.services import GamificationService
+        from apps.diet.models.mysql.gamification import Achievement, UserAchievement
         
-        data = GamificationService.get_merged_achievements(request.user)
+        # 1. 获取所有的成就字典数据
+        all_achievements = Achievement.objects.all().order_by('category', 'id')
         
+        # 2. 获取当前用户已解锁的成就记录
+        unlocked_qs = UserAchievement.objects.filter(user=request.user)
+        # 构建 HashMap 提升查询效率 {achievement_id: unlocked_at}
+        unlocked_map = {ua.achievement_id: ua.unlocked_at for ua in unlocked_qs}
+        
+        data = []
+        for ach in all_achievements:
+            is_unlocked = ach.id in unlocked_map
+            unlocked_time = unlocked_map[ach.id].strftime('%Y-%m-%d %H:%M:%S') if is_unlocked else None
+            
+            data.append({
+                "id": str(ach.id),
+                "name": ach.title,
+                "description": ach.desc,
+                "icon": ach.icon or "🏅",
+                "category": ach.category,
+                "rarity": ach.rarity,
+                "points": ach.points,
+                "unlocked": is_unlocked,
+                "unlocked_at": unlocked_time
+            })
+            
         return Response({"code": 200, "msg": "success", "data": data})
+    
 # [新增] 添加补救方案至计划视图
 class RemedyPlanActionView(APIView):
     """加入补救计划: POST /diet/remedy/add-to-plan/"""

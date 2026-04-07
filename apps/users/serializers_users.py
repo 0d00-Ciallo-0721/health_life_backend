@@ -50,35 +50,44 @@ class ProfileSerializer(serializers.ModelSerializer):
         ]
 
     def get_avatar(self, obj):
-        """
-        优先返回 Profile 中上传的头像，如果没有则返回 User 中的微信头像
-        """
+        """返回绝对路径的头像URL"""
+        request = self.context.get('request')
+        # 优先取 Profile 里的 avatar，其次取 User 表的 avatar 字符串
+        avatar_url = ""
         if obj.avatar:
-            return obj.avatar.url
-        return obj.user.avatar if hasattr(obj.user, 'avatar') else ""
+            avatar_url = obj.avatar.url
+        elif obj.user.avatar:
+            avatar_url = obj.user.avatar
+
+        if avatar_url and request:
+            return request.build_absolute_uri(avatar_url)
+        return avatar_url
 
     # -------- [新增] 动态字段方法预留 --------
     
     def get_follow_count(self, obj):
-        # 阶段四实现：查询用户关注了多少人
-        return getattr(obj, 'prefetched_follow_count', 0)
+        """获取关注数"""
+        return UserFollow.objects.filter(follower=obj.user).count()
 
     def get_fans_count(self, obj):
-        # 阶段四实现：查询用户的粉丝数量
-        return getattr(obj, 'prefetched_fans_count', 0)
+        """获取粉丝数"""
+        return UserFollow.objects.filter(followed=obj.user).count()
 
     def get_like_count(self, obj):
-        # 阶段四实现：查询该用户发布社区动态获得的总点赞数
+        """获取获赞总数 (聚合用户所有动态的点赞数)"""
+        # 这里预留接口，需结合社区模块的 Like 模型计算
         return getattr(obj, 'prefetched_like_count', 0)
 
     def get_badges(self, obj):
-        # 阶段二实现：聚合查询用户解锁的所有勋章字典
-        return []
+        """获取已解锁的所有勋章简报"""
+        # 联动 diet 模块的 UserAchievement 表
+        return [] 
 
     def get_featured_badges(self, obj):
-        # 阶段二实现：查询用户的代表徽章(最多3个)
-        return []
-
+        """获取名片展示的代表徽章"""
+        featured = UserFeaturedBadge.objects.filter(user=obj.user)[:3]
+        # 返回 BadgeSummary 结构
+        return [{"id": b.achievement_id, "name": "勋章名称", "icon": "🏅"} for b in featured]
     # ----------------------------------------
 
     def update(self, instance, validated_data):

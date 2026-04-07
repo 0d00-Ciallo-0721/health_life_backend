@@ -21,7 +21,8 @@ from apps.diet.api.v1.journal import (
 from apps.diet.api.v1.community import (
     CommunityFeedView, CommunityShareListView, 
     CommunityLikeView, CommunityCommentView,
-    CommunityFeedDetailView, CommunitySaveView, CommunityReportView  # [新增导入]
+    CommunityFeedDetailView, CommunitySaveView, CommunityReportView,
+    UserProfileView, UserPostsView  # [新增补充]
 )
 from apps.diet.api.v1.gamification import (
     ChallengeTaskView, ChallengeJoinView, ChallengeProgressView, ChallengeProgressActionView,
@@ -29,13 +30,15 @@ from apps.diet.api.v1.gamification import (
     RemedySolutionView, RemedyPlanActionView, RemedyUsageHistoryView, RemedyTriageView,
     CarbonFootprintView, CarbonWeeklyView, CarbonSuggestionView, CarbonHistoryView, CarbonAchievementView,
     RemedyFavoriteView, ChallengeTaskProgressCompatView, 
-    ChallengeTaskDetailView  # [需在 views 中补充或由已有视图处理]
+    ChallengeTaskDetailView,
+    UserFeaturedBadgeView # [新增补充]
 )
 from apps.diet.api.v1.tools import (
     AIFoodRecognitionView, AINutritionistView,
-    AIRealTimeAdviceView, AIChatView, AIAttachmentUploadView,
+    AIRealTimeAdviceView, AIChatView, AIChatStreamView, AIAttachmentUploadView, # [新增] AIChatStreamView
     AIIngredientRecognitionView, AIHealthWarningsView
 )
+
 from apps.diet.api.v1.analytics import (
     DailySummaryView, DailyChartDataView, WeeklyChartDataView, WeightChartDataView,
     DietWeeklyReportView, DietCalendarView, DietHistoryTrendView
@@ -90,7 +93,6 @@ urlpatterns = [
     path('community/feed/<str:feedId>/', CommunityFeedDetailView.as_view(), name='community_feed_detail'),
     path('community/feed/<str:feedId>/save/', CommunitySaveView.as_view(), name='community_save'),
     path('community/feed/<str:feedId>/report/', CommunityReportView.as_view(), name='community_report'),
-    
     # ==========================================
     # 6. 游戏化：挑战、成就与补救 (Gamification Domain)
     # ==========================================
@@ -107,7 +109,7 @@ urlpatterns = [
     path('challenge/progress/<int:progressId>/<str:action>/', ChallengeProgressActionView.as_view(), name='challenge_action'),
     path('challenge/leaderboard/', LeaderboardView.as_view(), name='challenge_leaderboard'),
     path('achievements/', AchievementView.as_view(), name='achievements'),
-    
+    path('achievements/featured/', UserFeaturedBadgeView.as_view(), name='featured_badges'),    
     # 补救方案
     path('remedy/solutions/', RemedySolutionView.as_view(), name='remedy_solutions'),
     path('remedy/triage/', RemedyTriageView.as_view(), name='remedy_triage'),
@@ -133,6 +135,7 @@ urlpatterns = [
     path('ai-nutritionist/analyze/', AINutritionistView.as_view(), name='ai_nutritionist'),
     path('ai-nutritionist/advice/', AIRealTimeAdviceView.as_view(), name='ai_realtime_advice'),
     path('ai-nutritionist/ask/', AIChatView.as_view(), name='ai_chat'),
+    path('ai-nutritionist/ask/stream/', AIChatStreamView.as_view(), name='ai_chat_stream'),
     path('ai-nutritionist/upload/', AIAttachmentUploadView.as_view(), name='ai_upload'),
     path('ai-nutritionist/warnings/', AIHealthWarningsView.as_view(), name='ai_health_warnings'),
 

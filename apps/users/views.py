@@ -12,6 +12,10 @@ from apps.common.utils import WeChatService
 from .models import User, Profile
 from .serializers_users import PublicProfileSerializer
 from .services import UserFollowService
+from rest_framework.parsers import MultiPartParser, JSONParser
+from django.core.files.storage import default_storage
+import os
+import uuid
 
 # ==================== 跨模块依赖导入 (带容错机制) ====================
 try:
@@ -187,10 +191,10 @@ class UserProfileView(APIView):
     """获取他人公开主页"""
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, user_id):
+    def get(self, request, userId):
         # 统一使用 CommunityService 以确保粉丝数、获赞数和代表勋章等字段存在
         from apps.diet.domains.community.services import CommunityService
-        data = CommunityService.get_user_profile(user_id, request.user.id)
+        data = CommunityService.get_user_profile(userId, request.user.id)
         if not data:
             return Response({"code": 404, "msg": "用户不存在"}, status=404)
         return Response({
@@ -227,8 +231,8 @@ class UserPostsView(APIView):
     """
     permission_classes = [IsAuthenticated]
 
-    def get(self, request, user_id):
-        target_user = get_object_or_404(User, id=user_id)
+    def get(self, request, userId):
+        target_user = get_object_or_404(User, id=userId)
         
         # 1. 获取分页参数
         try:
@@ -262,3 +266,56 @@ class UserPostsView(APIView):
                 'has_next': has_next
             }
         })
+    
+class ProfileUpdateView(APIView):
+    """
+    用户档案查询与更新
+    GET /diet/profile/ - 获取档案及社交统计
+    POST /diet/profile/ - 更新头像 (multipart/form-data)
+    PATCH /diet/profile/ - 更新文本字段 (JSON)
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser, JSONParser]
+
+    def get(self, request):
+        profile, created = Profile.objects.get_or_create(user=request.user)
+        serializer = ProfileSerializer(profile, context={'request': request})
+        return Response({"code": 200, "data": serializer.data})
+
+    def post(self, request):
+        """兼容微信小程序 wx.uploadFile 上传头像"""
+        avatar_file = request.FILES.get('avatar')
+        if not avatar_file:
+            return Response({"code": 400, "msg": "未检测到上传文件字段: avatar"}, status=400)
+
+        # 1. 生成唯一文件名并存储
+        ext = os.path.splitext(avatar_file.name)[1]
+        file_path = f"avatars/{request.user.id}_{uuid.uuid4().hex}{ext}"
+        saved_path = default_storage.save(file_path, avatar_file)
+        
+        # 2. 更新数据库
+        profile, _ = Profile.objects.get_or_create(user=request.user)
+        # 如果 Profile 的 avatar 是 FileField
+        profile.avatar = saved_path
+        profile.save()
+        
+        # 3. 实时更新 User 表冗余字段 (可选)
+        request.user.avatar = default_storage.url(saved_path)
+        request.user.save()
+
+        # 返回最新档案数据
+        serializer = ProfileSerializer(profile, context={'request': request})
+        return Response({
+            "code": 200, 
+            "msg": "头像更新成功",
+            "data": serializer.data
+        })
+
+    def patch(self, request):
+        """更新文本档案字段"""
+        profile, _ = Profile.objects.get_or_create(user=request.user)
+        serializer = ProfileSerializer(profile, data=request.data, partial=True, context={'request': request})
+        if serializer.is_valid():
+            serializer.save()
+            return Response({"code": 200, "data": serializer.data})
+        return Response({"code": 400, "msg": serializer.errors}, status=400)

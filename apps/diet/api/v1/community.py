@@ -11,15 +11,20 @@ class CommunityFeedView(APIView):
     def get(self, request):
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 10))
-        # [修改] 传递 request.user.id 进去用于 is_saved 状态判断
+        
+        # 1. 基础数据查询 (来自 Service 层，已含有基础的 is_saved, is_liked 判定)
         data = CommunityService.get_feed_list(page, page_size, current_user_id=request.user.id)
-        return Response({"code": 200, "msg": "success", "data": {"list": data}})
+        
+        # 2. [新增] 增强层：动态聚合用户徽章、组装标准数据结构
+        from apps.diet.serializers.community import FeedResponseEnhancer
+        enhanced_data = FeedResponseEnhancer.enhance_feed_list(data, request.user)
+        
+        return Response({"code": 200, "msg": "success", "data": {"list": enhanced_data}})
     
     def post(self, request):
-        # 兼容 /share/ 和 /feed/ POST
         feed_id = CommunityService.publish_feed(request.user.id, request.data)
         return Response({"code": 200, "msg": "发布成功", "data": {"id": feed_id}})
-
+    
 class CommunityShareListView(APIView):
     """分类分享列表: GET /diet/community/recipes/ 或 /restaurants/"""
     permission_classes = [IsAuthenticated]
@@ -141,3 +146,96 @@ class CommunityReportView(APIView):
         if "error" in res:
             return Response({"code": 400, "msg": res["error"]})
         return Response({"code": 200, "msg": "举报成功，感谢您的反馈", "data": res})    
+    
+
+
+# [新增] 核心业务逻辑 ====================
+class UserProfileView(APIView):
+    """
+    用户主页个人公开信息 
+    GET /user/{userId}/profile/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, userId):
+        from django.shortcuts import get_object_or_404
+        from apps.users.models import User, Profile, UserFollow
+        from apps.diet.models.mongo.community import CommunityFeed
+        from apps.diet.models.mysql.gamification import UserFeaturedBadge
+        
+        target_user = get_object_or_404(User, id=userId)
+        profile, _ = Profile.objects.get_or_create(user=target_user)
+        
+        # 1. 社交统计
+        follow_count = UserFollow.objects.filter(follower=target_user).count()
+        fans_count = UserFollow.objects.filter(followed=target_user).count()
+        is_followed = UserFollow.objects.filter(follower=request.user, followed=target_user).exists()
+        
+        # 2. 从 MongoDB 获取获赞数
+        try:
+            posts = CommunityFeed.objects.filter(user_id=target_user.id)
+            like_count = sum([p.likes_count for p in posts])
+        except Exception:
+            like_count = 0
+            
+        # 3. 拉取名片代表徽章
+        featured = UserFeaturedBadge.objects.filter(user=target_user).select_related('achievement')
+        badges = [{"id": str(b.achievement.id), "name": b.achievement.title, "icon": b.achievement.icon} for b in featured]
+
+        # 4. 头像防腐处理
+        avatar_url = target_user.avatar
+        if not avatar_url and getattr(profile, 'avatar', None):
+            avatar_url = profile.avatar.url if hasattr(profile.avatar, 'url') else str(profile.avatar)
+
+        data = {
+            "id": target_user.id,
+            "nickname": target_user.nickname or target_user.username,
+            "avatar": avatar_url,
+            "signature": getattr(profile, 'signature', ''),
+            "follow_count": follow_count,
+            "fans_count": fans_count,
+            "like_count": like_count,
+            "is_followed": is_followed,
+            "featured_badges": badges
+        }
+        return Response({"code": 200, "msg": "success", "data": data})
+
+class UserPostsView(APIView):
+    """
+    获取用户的动态列表 (含聚合)
+    GET /user/{userId}/posts/
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, userId):
+        try:
+            page = int(request.query_params.get('page', 1))
+            page_size = int(request.query_params.get('page_size', 10))
+        except ValueError:
+            page, page_size = 1, 10
+            
+        from apps.diet.models.mongo.community import CommunityFeed
+        from apps.diet.serializers.community import FeedResponseEnhancer
+        
+        skip = (page - 1) * page_size
+        # 降序查询 MongoDB 个人帖子，排除违规隐藏项
+        qs = CommunityFeed.objects.filter(user_id=int(userId), is_hidden=False).order_by('-created_at')[skip:skip+page_size]
+        
+        raw_list = []
+        for post in qs:
+            raw_list.append({
+                "id": str(post.id),
+                "user_id": post.user_id,
+                "content": post.content,
+                "type": post.feed_type,
+                "images": post.images,
+                "sport_info": post.sport_info,
+                "likes_count": post.likes_count,
+                "comments_count": post.comments_count,
+                "created_at": post.created_at.strftime("%Y-%m-%d %H:%M:%S")
+            })
+            
+        # [复用聚合层] 批量补齐徽章、用户信息及状态
+        enhanced_data = FeedResponseEnhancer.enhance_feed_list(raw_list, request.user)
+        
+        return Response({"code": 200, "msg": "success", "data": {"list": enhanced_data}})

@@ -6,7 +6,7 @@ from django.db.models import Sum
 from django.utils import timezone
 from django.core.cache import cache
 import datetime
-
+from django.http import StreamingHttpResponse 
 from apps.diet.domains.tools.ai_service import AIService
 from apps.diet.models import DailyIntake
 from apps.users.models import Profile
@@ -62,7 +62,33 @@ class AINutritionistView(APIView):
                 "today_calories": total_calories
             }
         })
-    
+
+# [新增] AI 智能问答视图 (SSE 流式版)
+class AIChatStreamView(APIView):
+    """智能问答 (流式输出): POST /diet/ai-nutritionist/ask/stream/"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        question = request.data.get("question")
+        if not question:
+            return Response({"code": 400, "msg": "问题不能为空"}, status=400)
+            
+        context_messages = request.data.get("context", [])
+        
+        # 获取生成器
+        stream_generator = AIService.chat_with_ai_stream(question, context_messages)
+        
+        # 返回 SSE 响应
+        response = StreamingHttpResponse(
+            stream_generator, 
+            content_type='text/event-stream'
+        )
+        # 防止前端或网关缓存导致无法流式呈现
+        response['Cache-Control'] = 'no-cache'
+        response['Connection'] = 'keep-alive'
+        response['X-Accel-Buffering'] = 'no'  # 核心：禁用 Nginx 缓冲，强制实时推送
+        
+        return response    
 
 
 # [新增] AI 实时建议视图

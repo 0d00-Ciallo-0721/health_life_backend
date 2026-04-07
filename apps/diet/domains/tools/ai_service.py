@@ -185,7 +185,40 @@ class AIService:
         except Exception as e:
             return {"error": f"AI问答交互失败: {str(e)}"}        
         
+    # [新增] AI 智能问答 (支持 Server-Sent Events 流式输出)
+    @staticmethod
+    def chat_with_ai_stream(question, context_messages=None):
+        if context_messages is None:
+            context_messages = []
+            
+        messages = [{"role": "system", "content": "你是一位专业的私人营养师，请为用户解答健康、饮食和运动方面的问题。"}]
+        messages.extend(context_messages)
+        messages.append({"role": "user", "content": question})
 
+        try:
+            client = AIService.get_client()
+            response = client.chat.completions.create(
+                model=settings.SILICONFLOW_MODEL,
+                messages=messages,
+                max_tokens=800,
+                stream=True  # [核心修改] 开启流式响应
+            )
+            
+            for chunk in response:
+                if chunk.choices and len(chunk.choices) > 0:
+                    delta_content = chunk.choices[0].delta.content
+                    if delta_content:
+                        # 构造前端约定的 JSON 结构并转为 SSE 格式
+                        data_str = json.dumps({"delta": delta_content}, ensure_ascii=False)
+                        yield f"data: {data_str}\n\n"
+            
+            # 流式传输结束标识
+            yield "data: [DONE]\n\n"
+            
+        except Exception as e:
+            # 捕获异常也需以 SSE 格式通知前端
+            error_str = json.dumps({"error": f"AI问答交互失败: {str(e)}"}, ensure_ascii=False)
+            yield f"data: {error_str}\n\n"
 
     # [新增] 食材智能识别 (专门用于冰箱录入)
     @staticmethod
@@ -320,25 +353,35 @@ class AIService:
 
     # [新增] 补救方案智能分诊
     @staticmethod
-    def triage_symptoms(symptoms_text, available_remedies_json):
+    def triage_symptoms(action_text, custom_keywords, available_remedies_json):
         """
-        传入用户自然语言描述的症状，以及数据库支持的 remedies，让 AI 返回匹配的 ID
+        传入用户自然语言描述的症状与关键词，以及数据库支持的 remedies，让 AI 返回匹配的 ID
         """
-        prompt = f"""
-        你是一个健康顾问。用户正在寻找缓解身体不适的饮食补救方案。
-        用户的症状或诉求是："{symptoms_text}"
+        # 组合用户多维度的诉求
+        symptoms_parts = []
+        if action_text:
+            symptoms_parts.append(f"用户近期行为描述：{action_text}")
+        if custom_keywords and isinstance(custom_keywords, list) and len(custom_keywords) > 0:
+            symptoms_parts.append(f"用户补充关键词/体征：{', '.join(custom_keywords)}")
+            
+        symptoms_text = "\n".join(symptoms_parts) if symptoms_parts else "身体不适，需要饮食补救。"
 
-        数据库中可用的补救方案列表如下（JSON）：
+        prompt = f"""
+        你是一个专业的临床与营养学健康顾问。用户正在寻找缓解身体不适的饮食补救方案。
+        用户的具体诉求是：
+        "{symptoms_text}"
+
+        数据库中目前可用的补救方案列表如下（JSON）：
         {available_remedies_json}
 
-        请选择1至3个最对症的方案，并给出推荐理由。
-        严格返回纯JSON对象，格式要求：
+        请选择 1 至 3 个最对症的方案，并给出推荐理由。
+        严格返回纯JSON对象，格式要求如下：
         {{
-            "matched_symptoms": ["提取出的用户症状1", "症状2"],
+            "matched_symptoms": ["提取出的核心症状1(简短)", "核心症状2"],
             "recommended_solutions": [
                 {{
                     "remedy_id": 对应方案的整数ID,
-                    "reason": "你推荐这个方案的医学或营养学解释（简短）"
+                    "reason": "你推荐这个方案的医学或营养学解释（简短，50字内，语气专业且具有同理心）"
                 }}
             ]
         }}
@@ -348,13 +391,17 @@ class AIService:
             client = AIService.get_client()
             response = client.chat.completions.create(
                 model=settings.SILICONFLOW_MODEL,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.3,
-                max_tokens=500
+                messages=[
+                    {"role": "system", "content": "你是一位敏锐且专业的健康分诊AI。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.3, # 降低发散，提高匹配准确度
+                max_tokens=600
             )
             content = response.choices[0].message.content
             cleaned = AIService._clean_json_response(content)
             return json.loads(cleaned)
-        except Exception:
-            # 返回兼容格式的外壳
-            return {"matched_symptoms": ["肠胃不适(AI判断失败降级)"], "recommended_solutions": []}
+        except Exception as e:
+            print(f"❌ AI Triage Error: {e}")
+            # 返回兼容格式的外壳，防止前端崩溃
+            return {"matched_symptoms": ["系统判断异常降级"], "recommended_solutions": []}

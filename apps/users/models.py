@@ -133,7 +133,6 @@ class Profile(models.Model):
         self.calculate_and_save_daily_limit()
         super().save(*args, **kwargs)
 
-
 class UserFollow(models.Model):
     """
     用户关注关系 (MySQL)
@@ -141,19 +140,23 @@ class UserFollow(models.Model):
     follower = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
         on_delete=models.CASCADE, 
-        related_name='following_rels', 
-        verbose_name="关注者"
+        related_name='following_relationships',
+        verbose_name='关注者'
     )
-    following = models.ForeignKey(
+    followed = models.ForeignKey(
         settings.AUTH_USER_MODEL, 
         on_delete=models.CASCADE, 
-        related_name='follower_rels', 
-        verbose_name="被关注者"
+        related_name='follower_relationships',
+        verbose_name='被关注者'
     )
-    created_at = models.DateTimeField(auto_now_add=True, verbose_name="关注时间")
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
-        db_table = 'users_userfollow'
-        verbose_name = '用户关注'
-        # 联合唯一索引：防止重复关注，并提高双向查询性能
-        unique_together = ('follower', 'following')
+        db_table = 'users_user_follow'
+        unique_together = ('follower', 'followed')
+        verbose_name = '关注关系'
+        verbose_name_plural = verbose_name
+
+    def __str__(self):
+        return f"{self.follower.username} -> {self.followed.username}"
+    

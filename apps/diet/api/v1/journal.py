@@ -154,33 +154,36 @@ class WorkoutDetailView(APIView):
 
 class WaterIntakeView(APIView):
     """
-    饮水记录视图
-    GET /diet/water-intake/?date=YYYY-MM-DD
+    饮水记录视图 (按日获取)
+    GET /diet/water/{date}/
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request, date_str):
+        # 兼容空参兜底
         if not date_str:
             from django.utils import timezone
             date_str = timezone.now().date().strftime('%Y-%m-%d')
             
         record = WaterIntake.objects.filter(user=request.user, date=date_str).first()
         
-        goal = 2000 # 默认毫升
+        # 获取用户饮水目标 (优先读取最新字段)
+        goal_ml = 2000
         if hasattr(request.user, 'profile') and request.user.profile:
-            # 优先读 water_goal_ml, 向下兼容 water_goal_cups
-            if hasattr(request.user.profile, 'water_goal_ml') and request.user.profile.water_goal_ml:
-                goal = request.user.profile.water_goal_ml
-            elif hasattr(request.user.profile, 'water_goal_cups') and request.user.profile.water_goal_cups:
-                goal = request.user.profile.water_goal_cups * 250
+            profile = request.user.profile
+            if getattr(profile, 'water_goal_ml', None):
+                goal_ml = profile.water_goal_ml
+            elif getattr(profile, 'water_goal_cups', None):
+                goal_ml = profile.water_goal_cups * 250
             
         events_data = []
         if record:
+            # 获取按照时间线排序的饮水事件流
             events = record.events.all().order_by('created_at')
             events_data = [{
-                'id': e.id,
+                'id': str(e.id),
                 'ml': e.ml,
-                'ts': int(e.created_at.timestamp() * 1000),
+                'ts': int(e.created_at.timestamp() * 1000), # 前端需要的毫秒时间戳
                 'source': e.source,
                 'note': e.note
             } for e in events]
@@ -193,7 +196,7 @@ class WaterIntakeView(APIView):
                 "total_ml": record.total_ml if record else 0,
                 "manual_ml": record.manual_ml if record else 0,
                 "food_ml": record.food_ml if record else 0,
-                "goal_ml": goal,
+                "goal_ml": goal_ml,
                 "events": events_data
             }
         })
@@ -201,8 +204,8 @@ class WaterIntakeView(APIView):
 
 class WaterEventView(APIView):
     """
-    饮水事件视图
-    POST /diet/water-intake/events/ {"date": "YYYY-MM-DD", "ml": 250, "source": "manual", "note": ""}
+    饮水事件追加视图
+    POST /diet/water/{date}/events/
     """
     permission_classes = [IsAuthenticated]
 
@@ -217,12 +220,13 @@ class WaterEventView(APIView):
         except ValueError:
             return Response({"code": 400, "msg": "ml 必须是整数"}, status=400)
             
+        # 幂等获取当天的总记录对象
         record, _ = WaterIntake.objects.get_or_create(
             user=request.user,
             date=date_str
         )
         
-        # 保存事件
+        # 创建新的事件流节点
         source = request.data.get('source', 'manual')
         note = request.data.get('note', '')
         event = WaterEvent.objects.create(
@@ -232,7 +236,7 @@ class WaterEventView(APIView):
             note=note
         )
         
-        # 更新总计
+        # 同步更新每日总计
         record.manual_ml += ml_val
         record.total_ml += ml_val
         record.save()
@@ -245,7 +249,7 @@ class WaterEventView(APIView):
                 "total_ml": record.total_ml,
                 "manual_ml": record.manual_ml,
                 "event": {
-                    "id": event.id,
+                    "id": str(event.id),
                     "ml": event.ml,
                     "source": event.source,
                     "ts": int(event.created_at.timestamp() * 1000)
@@ -256,8 +260,8 @@ class WaterEventView(APIView):
 
 class WaterResetView(APIView):
     """
-    饮水清空视图
-    POST /diet/water-intake/reset/ {"date": "YYYY-MM-DD"}
+    饮水清空视图 (重置当日所有手动饮水)
+    POST /diet/water/{date}/reset/
     """
     permission_classes = [IsAuthenticated]
 
@@ -270,9 +274,19 @@ class WaterResetView(APIView):
             date=date_str
         ).first()
         
-        if not record:
-             return Response({"code": 200, "msg": "今日无记录可清空"})
+        # 降级：如果本身就为空，也要返回前端期望的标准结构
+        if not record or record.manual_ml == 0:
+             return Response({
+                 "code": 200, 
+                 "msg": "今日已清空或无记录", 
+                 "data": {
+                     "date": date_str,
+                     "total_ml": record.total_ml if record else 0,
+                     "manual_ml": 0
+                 }
+             })
              
+        # 追加一条清空补偿事件
         event = WaterEvent.objects.create(
             intake=record,
             ml=-record.manual_ml,
@@ -292,7 +306,7 @@ class WaterResetView(APIView):
                 "total_ml": record.total_ml,
                 "manual_ml": record.manual_ml,
                 "event": {
-                    "id": event.id,
+                    "id": str(event.id),
                     "ml": event.ml,
                     "source": event.source,
                     "ts": int(event.created_at.timestamp() * 1000)
