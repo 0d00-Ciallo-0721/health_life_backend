@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from datetime import timedelta
 import mongoengine
-from dotenv import load_dotenv # 引入读取环境变量的库
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -13,6 +13,7 @@ load_dotenv(BASE_DIR / '.env')
 # ✅ 2. 读取密钥 (优先从环境变量读，读不到用默认值)
 SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-fallback-key')
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+# 开发与穿透调试期允许所有主机，生产环境建议在 .env 中配置具体域名
 ALLOWED_HOSTS = ['*']
 
 # Application definition
@@ -28,12 +29,12 @@ INSTALLED_APPS = [
     'rest_framework',
     'corsheaders',
     'drf_spectacular', 
+    'rest_framework_simplejwt.token_blacklist',  # [新增] JWT黑名单应用，用于退出登录
     
     # Local apps
     'apps.users',
     'apps.diet',
     'apps.common',
-    # 管理后台模块
     'apps.admin_management', 
 ]
 
@@ -50,9 +51,6 @@ MIDDLEWARE = [
 ]
 
 # --- 🚀 3. 智能数据库配置 (Smart Database Switch) ---
-# 逻辑：检查环境变量 FORCE_MYSQL。
-# 如果为 True，尝试用 MySQL；否则默认用 SQLite (便携，无需安装MySQL)。
-
 USE_MYSQL = os.environ.get('FORCE_MYSQL', 'False') == 'True'
 
 if USE_MYSQL:
@@ -65,6 +63,9 @@ if USE_MYSQL:
             'PASSWORD': os.environ.get('DB_PASSWORD', ''),
             'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
             'PORT': os.environ.get('DB_PORT', '3306'),
+            'OPTIONS': {
+                'charset': 'utf8mb4',
+            }
         }
     }
 else:
@@ -79,7 +80,7 @@ else:
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [],
+        'DIRS': [BASE_DIR / 'templates'], # 增加全局模板目录扫描
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -100,15 +101,13 @@ try:
         host=MONGO_HOST,
         port=27017,
         alias='default',
-        serverSelectionTimeoutMS=2000 # 超时设置短一点，避免连不上卡死
+        serverSelectionTimeoutMS=2000 
     )
     print(f"✅ [Settings] MongoDB 连接尝试: {MONGO_HOST}")
 except Exception as e:
     print(f"⚠️ [Settings] MongoDB 连接失败 (LBS功能可能受限): {e}")
 
 # --- 🚀 5. 智能缓存配置 (Smart Cache Switch) ---
-# 逻辑：如果 .env 里配了 Redis 且装了库，就用 Redis；否则降级为内存缓存。
-
 REDIS_URL = os.environ.get('REDIS_URL', '')
 HAS_REDIS_LIB = False
 try:
@@ -149,15 +148,10 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.IsAuthenticated',
     ),
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
-    
-    # ✅ [修改] 激活全局异常处理
     'EXCEPTION_HANDLER': 'apps.common.exceptions.custom_exception_handler',
-    
-    # ✅ [新增/取消注释] 激活统一响应渲染器
-    # 这会将 ProfileUpdateView 等原生接口的返回自动包装为 {code: 200, data: ...}
     'DEFAULT_RENDERER_CLASSES': (
         'apps.common.renderers.CustomRenderer',
-        'rest_framework.renderers.BrowsableAPIRenderer', # 保留浏览器调试界面
+        'rest_framework.renderers.BrowsableAPIRenderer', 
     ),
 }
 
@@ -184,33 +178,38 @@ WSGI_APPLICATION = 'health_life.wsgi.application'
 LANGUAGE_CODE = 'zh-hans'
 TIME_ZONE = 'Asia/Shanghai'
 USE_TZ = True
-STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# --- 🎯 6. 静态文件与媒体文件配置 (已修复) ---
+STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'  # 生产环境收集静态文件的目录
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'         # 处理用户头像、帖子图片等物理存储位置
+
+# --- 🛡️ 7. CSRF 与穿透安全设置 (已修复) ---
+# 必须配置，否则通过 SSH 公网隧道 (8081端口) 访问 Admin 后台会报 403 CSRF 错误
+CSRF_TRUSTED_ORIGINS = [
+    'http://47.93.45.198:8081',
+    'https://47.93.45.198:8081',
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+]
 
 # --- 高德地图 ---
 AMAP_WEB_KEY = os.environ.get('AMAP_WEB_KEY', '')
 
-
 # --- AI 服务配置 (SiliconFlow) ---
-# 请将 'sk-...' 替换为你真实的 Key，或者在系统环境变量中设置 SILICONFLOW_API_KEY
 SILICONFLOW_API_KEY = os.environ.get('SILICONFLOW_API_KEY', 'sk-pqovdrehlnwxfmhgmhgifwaaxreddhemoaxmecxbhexgtbuf')
 SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
-# 视觉模型：Qwen2-VL 或 Qwen3-VL (根据你的账号权限调整)
 SILICONFLOW_MODEL = "Qwen/Qwen2.5-VL-72B-Instruct" 
-# 注意: Qwen3-VL-Thinking 可能是预览版，如果报错请改回 Qwen2.5-VL-72B-Instruct 或 Qwen2-VL-72B-Instruct
 
-
-
-# --- 🚀 CORS 跨域设置 (修复 Network Error) ---
-# 允许所有域名访问 (开发环境推荐)
+# --- 🚀 CORS 跨域设置 ---
 CORS_ALLOW_ALL_ORIGINS = True 
-
-# 允许携带认证信息 (如 Cookies/Session，虽然我们用 JWT 但加上这个更保险)
 CORS_ALLOW_CREDENTIALS = True
 
-# 允许的请求头 (通常保持默认即可，但为了保险可以显式加上)
 from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + [
-    'authorization', # 允许前端发送 Authorization: Bearer xxx
+    'authorization', 
     'x-requested-with',
 ]

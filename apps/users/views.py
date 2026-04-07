@@ -6,7 +6,7 @@ from django.db import transaction
 from django.utils import timezone
 from django.shortcuts import get_object_or_404
 import time
-
+from rest_framework_simplejwt.exceptions import TokenError
 from apps.common.exceptions import BusinessException
 from apps.common.utils import WeChatService
 from .models import User, Profile
@@ -25,8 +25,64 @@ except ImportError:
     PostSerializer = None
 
 
+class LogoutView(APIView):
+    """后端彻底退出登录 (作废 Refresh Token)"""
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        try:
+            # 接收前端传来的 refresh_token
+            refresh_token = request.data.get("refresh_token")
+            if not refresh_token:
+                return Response({"code": 400, "msg": "缺少 refresh_token 参数"}, status=400)
+            
+            # 将该 token 加入黑名单
+            token = RefreshToken(refresh_token)
+            token.blacklist()
+            
+            return Response({"code": 200, "msg": "退出登录成功"})
+        except TokenError:
+            return Response({"code": 400, "msg": "Token 无效或已过期"}, status=400)
+        except Exception as e:
+            return Response({"code": 500, "msg": f"退出失败: {str(e)}"}, status=500)
+
+
 class WeChatLoginView(APIView):
     permission_classes = [AllowAny] 
+
+    def post(self, request):
+        code = request.data.get('code')
+        if not code:
+            return Response({'code': 400, 'msg': 'missing code'}, status=400)
+        
+        try:
+            wechat_data = WeChatService.get_openid(code)
+        except Exception as e:
+            return Response({'code': 400, 'msg': str(e)}, status=400)
+
+        openid = wechat_data.get('openid')
+        if not openid:
+            return Response({'code': 400, 'msg': 'openid 获取失败'}, status=400)
+
+        with transaction.atomic():
+            user, created = User.objects.get_or_create(
+                openid=openid,
+                defaults={'username': f"wx_{openid[:8]}_{int(time.time())}"}
+            )
+            if not hasattr(user, 'profile'):
+                Profile.objects.create(user=user)
+        
+        refresh = RefreshToken.for_user(user)
+        return Response({
+            'code': 200,
+            'msg': 'success',
+            'data': {
+                'access_token': str(refresh.access_token), # [修改] 明确字段名
+                'refresh_token': str(refresh),             # [新增] 返回 refresh_token 供前端刷新和退出使用
+                'is_new_user': created,
+                'user_id': user.id                         # [新增] 返回 user_id
+            }
+        })
 
     def post(self, request):
         code = request.data.get('code')
