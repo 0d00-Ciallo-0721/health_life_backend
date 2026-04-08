@@ -2,6 +2,7 @@ from rest_framework.generics import RetrieveUpdateAPIView
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.parsers import JSONParser, MultiPartParser, FormParser
 
 from apps.users.models import Profile
 from apps.diet.serializers.preferences import ProfileSerializer
@@ -11,16 +12,30 @@ from apps.diet.domains.preferences.selectors import PreferenceSelector
 class ProfileUpdateView(RetrieveUpdateAPIView):
     permission_classes = [IsAuthenticated]
     serializer_class = ProfileSerializer
+    # [新增] 显式增加多部分解析器，确保支持 wx.uploadFile 的头像上传
+    parser_classes = [JSONParser, MultiPartParser, FormParser]
+
     def get_object(self):
         obj, _ = Profile.objects.get_or_create(user=self.request.user)
         return obj
 
     def post(self, request, *args, **kwargs):
-        # 兼容小程序的 POST 请求
         return self.partial_update(request, *args, **kwargs)
 
     def perform_update(self, serializer):
+        # 1. 执行原有的保存逻辑
         instance = serializer.save()
+        
+        # 2. [核心修复] 数据同步：
+        # 只有当用户确实通过表单文件上传了"新物理头像"时，才用新物理文件的URL覆盖 user.avatar
+        # 如果是切换默认头像（纯字符串），不会触发此条件，避免把刚更新的默认头像又用旧文件覆盖掉
+        if 'avatar' in self.request.FILES and instance.avatar:
+            new_avatar_url = self.request.build_absolute_uri(instance.avatar.url)
+            if instance.user.avatar != new_avatar_url:
+                instance.user.avatar = new_avatar_url
+                instance.user.save(update_fields=['avatar'])
+        
+        # 3. 计算并保存每日限额
         instance.calculate_and_save_daily_limit()
 
 class PreferenceOperationView(APIView):
@@ -47,72 +62,27 @@ class FavoriteListView(APIView):
     def get(self, request):
         filter_type = request.query_params.get('type', 'all')
         
-        # 1. 查询 MySQL 获取用户收藏关系
-        from apps.diet.models.mysql.preference import Preference
-        qs = Preference.objects.filter(user=request.user, action='favorite')
-        if filter_type in ['recipe', 'restaurant']:
-            qs = qs.filter(target_type=filter_type)
-        
-        favorites = list(qs)
-        if not favorites:
-            return Response({"code": 200, "msg": "success", "data": []})
-
-        # 2. 提取 ID 批量查询 MongoDB
-        recipe_ids = [fav.target_id for fav in favorites if fav.target_type == 'recipe']
-        restaurant_ids = [fav.target_id for fav in favorites if fav.target_type == 'restaurant']
-        
-        recipe_map = {}
-        restaurant_map = {}
-        
-        # 动态导入 MongoDB 模型防循环依赖，并执行 in 查询
         try:
-            if recipe_ids:
-                from apps.diet.models.mongo.recipe import Recipe
-                recipes = Recipe.objects.filter(id__in=recipe_ids)
-                recipe_map = {str(r.id): r for r in recipes}
-        except Exception:
-            pass
+            # 直接调用 Service 层已实现好的跨库聚合引擎，规避原来的模型导入错误和 action 映射错误
+            results = PreferenceService.get_favorites(request.user, filter_type=filter_type)
             
-        try:
-            if restaurant_ids:
-                from apps.diet.models.mongo.restaurant import Restaurant
-                restaurants = Restaurant.objects.filter(id__in=restaurant_ids)
-                restaurant_map = {str(r.id): r for r in restaurants}
-        except Exception:
-            pass
-        
-        # 3. 组装符合前端契约的标准化列表
-        result_list = []
-        for fav in favorites:
-            item_data = {
-                "id": fav.target_id,
-                "type": fav.target_type,
-                "name": "已失效内容",
-                "image": "",
-                "created_at": fav.created_at.strftime("%Y-%m-%d %H:%M:%S")
-            }
+            # 由于 Service 层未排序，我们在视图层统一做一次时间倒序展示最新收藏
+            results.reverse() 
             
-            if fav.target_type == 'recipe':
-                recipe = recipe_map.get(str(fav.target_id))
-                if recipe:
-                    item_data["name"] = getattr(recipe, 'name', item_data["name"])
-                    item_data["image"] = getattr(recipe, 'cover_image', getattr(recipe, 'image', ""))
-                    item_data["calories"] = getattr(recipe, 'calories', 0)
-                    item_data["tags"] = getattr(recipe, 'tags', [])
-                    
-            elif fav.target_type == 'restaurant':
-                restaurant = restaurant_map.get(str(fav.target_id))
-                if restaurant:
-                    item_data["name"] = getattr(restaurant, 'name', item_data["name"])
-                    item_data["image"] = getattr(restaurant, 'cover_image', getattr(restaurant, 'image', ""))
-                    item_data["rating"] = getattr(restaurant, 'rating', 0.0)
-                    item_data["address"] = getattr(restaurant, 'address', "")
-                    
-            # 过滤掉 MongoDB 中被删除但收藏表中仍存在的脏数据
-            if item_data["name"] != "已失效内容":
-                result_list.append(item_data)
-                
-        # 按收藏时间倒序排列
-        result_list.sort(key=lambda x: x["created_at"], reverse=True)
-        
-        return Response({"code": 200, "msg": "success", "data": result_list})
+            return Response({
+                "code": 200, 
+                "msg": "success", 
+                "data": results
+            })
+            
+        except Exception as e:
+            # 捕获异常并打印到 runserver 控制台，方便后续排查
+            import traceback
+            traceback.print_exc()
+            
+            # [核心修改点]：严格遵循前端约定，即使后端抛错也返回 200 + 空数组，避免向前端抛出 500 导致页面白屏崩溃
+            return Response({
+                "code": 200, 
+                "msg": "获取收藏列表异常，已提供兜底空数据", 
+                "data": []
+            })

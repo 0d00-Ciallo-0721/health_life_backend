@@ -1,6 +1,7 @@
 from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed
 import requests
+import base64
 
 # 食材同义词库
 INGREDIENT_SYNONYMS = {
@@ -129,3 +130,45 @@ def encode_image_to_base64(image_file):
         traceback.print_exc()
         print(f"❌ Image Encode Error: {str(e)}")
         return None  
+    
+
+def uploaded_image_to_data_url(image_file):
+    """
+    读取原始字节，结合 Content-Type 与 文件魔数（JPEG / PNG / WebP / GIF）
+    生成与真实格式一致的 data:<mime>;base64,... URL
+    """
+    try:
+        # 重置文件指针
+        if hasattr(image_file, 'seek'):
+            image_file.seek(0)
+        
+        image_content = image_file.read()
+        if not image_content:
+            print("❌ Image Encode Error: 文件内容为空")
+            return None
+            
+        base64_content = base64.b64encode(image_content).decode('utf-8')
+        
+        # 1. 尝试从文件对象获取 Content-Type
+        mime_type = getattr(image_file, 'content_type', '')
+        
+        # 2. 如果没有 Content-Type 或者是通用流，则通过文件魔数判断
+        if not mime_type or mime_type == 'application/octet-stream':
+            if image_content.startswith(b'\xff\xd8'):
+                mime_type = 'image/jpeg'
+            elif image_content.startswith(b'\x89PNG\r\n\x1a\n'):
+                mime_type = 'image/png'
+            elif image_content.startswith(b'GIF87a') or image_content.startswith(b'GIF89a'):
+                mime_type = 'image/gif'
+            elif image_content.startswith(b'RIFF') and image_content[8:12] == b'WEBP':
+                mime_type = 'image/webp'
+            else:
+                mime_type = 'image/jpeg'  # 默认降级
+        
+        return f"data:{mime_type};base64,{base64_content}"
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"❌ Image Encode Error: {str(e)}")
+        return None

@@ -3,6 +3,11 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from apps.diet.domains.community.services import CommunityService
+from rest_framework.parsers import MultiPartParser
+from django.core.files.storage import default_storage
+import uuid
+import os
+
 
 class CommunityFeedView(APIView):
     """动态流: GET/POST /diet/community/feed/ 及 POST /diet/community/share/"""
@@ -239,3 +244,36 @@ class UserPostsView(APIView):
         enhanced_data = FeedResponseEnhancer.enhance_feed_list(raw_list, request.user)
         
         return Response({"code": 200, "msg": "success", "data": {"list": enhanced_data}})
+
+
+class CommunityUploadView(APIView):
+    """
+    社区发帖图片上传
+    POST /community/upload/
+    """
+    permission_classes = [IsAuthenticated]
+    parser_classes = [MultiPartParser]
+
+    def post(self, request):
+        upload_file = request.FILES.get('file')
+        if not upload_file:
+            return Response({"code": 400, "msg": "请上传图片文件"})
+            
+        custom_name = request.data.get('name', upload_file.name)
+        
+        # 存储文件到媒体库 (community_uploads/ 目录下)
+        ext = os.path.splitext(upload_file.name)[1]
+        filename = f"community_uploads/{uuid.uuid4().hex}{ext}"
+        saved_path = default_storage.save(filename, upload_file)
+        
+        # 获取可通过 HTTP 访问的 URL (受 settings.MEDIA_URL 控制)
+        file_url = default_storage.url(saved_path)
+        
+        # 返回与前端约定的格式
+        data = {
+            "url": file_url,         # 前端将提取该 url 用于 posts.images
+            "name": custom_name,
+            "mime_type": upload_file.content_type,
+            "size": upload_file.size
+        }
+        return Response({"code": 200, "msg": "上传成功", "data": data})

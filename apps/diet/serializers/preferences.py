@@ -8,23 +8,76 @@ class ProfileSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Profile
+        # [核心修复] 将 avatar、signature 及其他新增的身体档案字段全量加入白名单
         fields = [
-            'nickname', 'gender', 'height', 'weight', 'age', 
+            'nickname', 'avatar', 'signature', 'gender', 'height', 'weight', 'age', 
             'activity_level', 'diet_tags', 'allergens', 
-            'daily_kcal_limit', 'goal_type'
+            'daily_kcal_limit', 'goal_type', 'target_weight', 
+            'water_goal_cups', 'water_goal_ml', 'bmr'
         ]
-        read_only_fields = ['daily_kcal_limit']
+        # BMR 和 每日推荐摄入量由后端公式自动计算，不允许前端直接篡改
+        read_only_fields = ['daily_kcal_limit', 'bmr']
 
     def update(self, instance, validated_data):
-        # 提取 nickname (因为它属于 User 表)
+        # 提取 nickname
         user_data = validated_data.pop('user', {})
         nickname = user_data.get('nickname')
         
-        if nickname:
+        user_updated = False
+        if nickname and instance.user.nickname != nickname:
             instance.user.nickname = nickname
-            instance.user.save() # 保存到 User 表
+            user_updated = True
+
+        # [核心修复] 处理前端传来的默认头像字符串
+        if getattr(self, '_passed_avatar_string', None):
+            new_avatar_str = self._passed_avatar_string
+            # 只有当新传来的头像字符串和当前不一样，且不是同一张图的相对路径时，才执行更新
+            if new_avatar_str != instance.user.avatar and not (instance.user.avatar and instance.user.avatar.endswith(new_avatar_str)):
+                instance.user.avatar = new_avatar_str
+                # 既然换成了默认头像（纯字符串），清空旧的物理文件关联，防止产生数据混乱
+                instance.avatar = None
+                user_updated = True
+
+        if user_updated:
+            instance.user.save()
 
         return super().update(instance, validated_data)
+
+    def to_internal_value(self, data):
+        if hasattr(data, 'copy'):
+            _data = data.copy()
+        else:
+            _data = dict(data)
+            
+        avatar_val = _data.get('avatar')
+        
+        # [逻辑修正]
+        # 如果前端传的是字符串（即切换自带的默认头像URL），这不是文件。
+        # 为了防止 ImageField 报 '不是一个文件' 的 400 错误，我们将其弹出，
+        # 并暂存到序列化器实例属性中，稍后在 update 方法中单独更新给 User 模型。
+        if isinstance(avatar_val, str):
+            self._passed_avatar_string = avatar_val
+            _data.pop('avatar', None)
+        else:
+            self._passed_avatar_string = None
+            
+        return super().to_internal_value(_data)
+
+    def to_representation(self, instance):
+        """
+        拦截序列化输出
+        确保无论用户使用的是物理上传的头像还是系统默认的URL头像，
+        前端都能准确收到完整字符串，而不是 null
+        """
+        data = super().to_representation(instance)
+        
+        # 如果 Profile 层的物理文件 avatar 为空 (或者序列化结果为 null)
+        # 则说明当前使用的是默认头像，我们需要从 User 表中把 URL 拿出来补齐给前端
+        if not data.get('avatar') and instance.user.avatar:
+            data['avatar'] = instance.user.avatar
+            
+        return data
+
 
 class UserPreferenceSerializer(serializers.ModelSerializer):
     class Meta:

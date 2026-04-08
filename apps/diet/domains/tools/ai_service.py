@@ -1,7 +1,7 @@
 from openai import OpenAI
 import json
 from django.conf import settings
-from apps.common.utils import encode_image_to_base64
+from apps.common.utils import encode_image_to_base64, uploaded_image_to_data_url
 
 class AIService:
     _client = None
@@ -31,13 +31,13 @@ class AIService:
         """
         [功能 1] 拍图识热量 (接入 Qwen-VL)
         """
-        # 1. 尝试编码
+        # 1. 尝试编码，获取带真实 MIME 的 Data URL
         try:
-            base64_image = encode_image_to_base64(image_file)
+            data_url = uploaded_image_to_data_url(image_file)
         except Exception as e:
             return {"error": f"图片编码异常: {str(e)}"}
 
-        if not base64_image:
+        if not data_url:
             return {"error": "图片处理失败(base64生成为空)，请检查服务端控制台日志"}
 
         # 2. 准备 Prompt
@@ -67,8 +67,8 @@ class AIService:
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": [
                         {"type": "text", "text": "分析这张图片"},
-                        # [核心修改]: 补全标准的 Data URI Base64 前缀，修复大模型接口因解析图片失败导致的 500 崩溃
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                        # [核心修改]: 使用生成的 data_url，避免写死 image/jpeg 以及避免重复拼接前缀
+                        {"type": "image_url", "image_url": {"url": data_url}}
                     ]}
                 ],
                 temperature=0.1,
@@ -227,11 +227,11 @@ class AIService:
         识别基础食材并返回适合存入冰箱的结构化数据
         """
         try:
-            base64_image = encode_image_to_base64(image_file)
+            data_url = uploaded_image_to_data_url(image_file)
         except Exception as e:
             return {"error": f"图片编码异常: {str(e)}"}
 
-        if not base64_image:
+        if not data_url:
             return {"error": "图片处理失败(base64生成为空)"}
 
         prompt = """
@@ -255,7 +255,8 @@ class AIService:
                         "role": "user",
                         "content": [
                             {"type": "text", "text": prompt},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
+                            # [核心修改]: 使用生成的 data_url，避免写死 image/jpeg 以及重复拼接前缀
+                            {"type": "image_url", "image_url": {"url": data_url}}
                         ]
                     }
                 ],

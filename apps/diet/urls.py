@@ -22,7 +22,8 @@ from apps.diet.api.v1.community import (
     CommunityFeedView, CommunityShareListView, 
     CommunityLikeView, CommunityCommentView,
     CommunityFeedDetailView, CommunitySaveView, CommunityReportView,
-    UserProfileView, UserPostsView  # [新增补充]
+    UserProfileView, UserPostsView,
+    CommunityUploadView  # [新增补充]
 )
 from apps.diet.api.v1.gamification import (
     ChallengeTaskView, ChallengeJoinView, ChallengeProgressView, ChallengeProgressActionView,
@@ -84,8 +85,9 @@ urlpatterns = [
     # ==========================================
     # 5. 社区与社交 (Community Domain)
     # ==========================================
+    path('community/upload/', CommunityUploadView.as_view(), name='community_upload'), # [新增] 图片上传
     path('community/feed/', CommunityFeedView.as_view(), name='community_feed'),
-    path('community/share/', CommunityFeedView.as_view(), name='community_share'), # 复用发帖逻辑
+    path('community/share/', CommunityFeedView.as_view(), name='community_share'),
     path('community/recipes/', CommunityShareListView.as_view(feed_type='recipe'), name='community_recipes'),
     path('community/restaurants/', CommunityShareListView.as_view(feed_type='restaurant'), name='community_restaurants'),
     path('community/feed/<str:feedId>/like/', CommunityLikeView.as_view(), name='community_like'),
