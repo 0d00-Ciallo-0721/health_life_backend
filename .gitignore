@@ -6,3 +6,6 @@ venv/
 
 # 启动指令脚本
 start_tunnel.bat
+
+
+media/
