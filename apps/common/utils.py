@@ -2,6 +2,9 @@ from django.conf import settings
 from rest_framework.exceptions import AuthenticationFailed
 import requests
 import base64
+import logging
+
+logger = logging.getLogger(__name__)
 
 # 食材同义词库
 INGREDIENT_SYNONYMS = {
@@ -46,8 +49,7 @@ class WeChatService:
         """
         # ✅ [修复核心] 拦截测试码，绕过微信API
         # 只要是 TEST_ 开头的 code，直接视为测试通过
-        if code and str(code).startswith("TEST_"):
-            print(f"⚠️ [Mock Login] 检测到测试码 {code}，模拟登录成功")
+        if settings.ALLOW_TEST_WECHAT_LOGIN and code:
             return {
                 "openid": f"mock_openid_{code}", # 生成一个固定的 mock openid
                 "session_key": "mock_session_key"
@@ -77,7 +79,7 @@ class WeChatService:
 
 class AMapService:
     @staticmethod
-    def search_nearby_restaurants(lng, lat, radius=3000):
+    def search_nearby_restaurants(lng, lat, radius=3000, page=1, offset=20):
         key = settings.AMAP_WEB_KEY
         if not key: return []
         url = "https://restapi.amap.com/v3/place/around"
@@ -86,8 +88,8 @@ class AMapService:
             "location": f"{lng},{lat}",
             "types": "050000",
             "radius": radius,
-            "offset": 20,
-            "page": 1,
+            "offset": offset,
+            "page": page,
             "extensions": "all"
         }
         try:
@@ -115,7 +117,7 @@ def encode_image_to_base64(image_file):
         # 3. 读取并编码
         image_content = image_file.read()
         if not image_content:
-            print("❌ Image Encode Error: 文件内容为空")
+            logger.warning("Image encode failed: empty file content")
             return None
             
         base64_content = base64.b64encode(image_content).decode('utf-8')
@@ -125,10 +127,7 @@ def encode_image_to_base64(image_file):
         return f"data:image/jpeg;base64,{base64_content}"
         
     except Exception as e:
-        # 打印详细堆栈，方便在 runserver 控制台查看
-        import traceback
-        traceback.print_exc()
-        print(f"❌ Image Encode Error: {str(e)}")
+        logger.exception("Image encode failed: %s", e)
         return None  
     
 
@@ -144,7 +143,7 @@ def uploaded_image_to_data_url(image_file):
         
         image_content = image_file.read()
         if not image_content:
-            print("❌ Image Encode Error: 文件内容为空")
+            logger.warning("Image encode failed: empty file content")
             return None
             
         base64_content = base64.b64encode(image_content).decode('utf-8')
@@ -168,7 +167,5 @@ def uploaded_image_to_data_url(image_file):
         return f"data:{mime_type};base64,{base64_content}"
         
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        print(f"❌ Image Encode Error: {str(e)}")
+        logger.exception("Image encode failed: %s", e)
         return None

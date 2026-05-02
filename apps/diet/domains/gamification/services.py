@@ -1,6 +1,7 @@
 # [新增] 整个文件: apps/diet/domains/gamification/services.py
 from django.utils import timezone
 from django.core.cache import cache
+from django.db.models import Sum
 from apps.diet.models.mysql.gamification import ChallengeTask, UserChallengeProgress
 
 class GamificationService:
@@ -36,48 +37,70 @@ class GamificationService:
             return {"status": record.status}
             
         if action == 'check' and record.status == 'pending':
+            record.progress = min(int(record.progress or 0) + 1, 100)
+            if record.progress < 100:
+                record.save(update_fields=['progress'])
+                return {"status": record.status, "progress": record.progress}
+
             record.status = 'completed'
             record.completed_at = timezone.now()
-            record.save()
-            
-            # 使用 Redis 的有序集合 (Sorted Set) 实现排行榜积分累加
-            redis_client = getattr(cache, 'client', None)
-            if redis_client:
-                try:
-                    # 兼容 django-redis 的原生 client 获取
-                    r = redis_client.get_client()
-                    leaderboard_key = "diet_leaderboard_weekly"
-                    r.zincrby(leaderboard_key, record.challenge.reward_points, user.id)
-                except Exception:
-                    pass # 降级处理，若无 redis 则忽略
-                    
-            return {"status": record.status, "reward": record.challenge.reward_points}
-            
+            record.save(update_fields=['progress', 'status', 'completed_at'])
+            GamificationService._increment_leaderboard(user.id, record.challenge.reward_points)
+
+            return {"status": record.status, "progress": record.progress, "reward": record.challenge.reward_points}
+
         return {"status": record.status}
+
+    @staticmethod
+    def _increment_leaderboard(user_id, points, board_type='weekly'):
+        redis_client = getattr(cache, 'client', None)
+        if not redis_client:
+            return
+        try:
+            r = redis_client.get_client()
+            leaderboard_key = f"diet_leaderboard_{board_type}"
+            r.zincrby(leaderboard_key, points, user_id)
+        except Exception:
+            pass
 
     @staticmethod
     def get_leaderboard(board_type='weekly', scope='global'):
         """获取排行榜数据 (依赖 Redis ZSET)"""
         redis_client = getattr(cache, 'client', None)
-        if not redis_client:
-            return []
-        
-        try:
-            r = redis_client.get_client()
-            key = f"diet_leaderboard_{board_type}"
-            # ZREVRANGE: 按分数降序，取前 50 名
-            top_users = r.zrevrange(key, 0, 49, withscores=True)
-            
-            results = []
-            for rank, (uid, score) in enumerate(top_users):
-                results.append({
-                    "rank": rank + 1,
-                    "user_id": int(uid),
-                    "score": int(score)
-                })
-            return results
-        except Exception:
-            return []
+        if redis_client:
+            try:
+                r = redis_client.get_client()
+                key = f"diet_leaderboard_{board_type}"
+                top_users = r.zrevrange(key, 0, 49, withscores=True)
+
+                results = []
+                for rank, (uid, score) in enumerate(top_users):
+                    if isinstance(uid, bytes):
+                        uid = uid.decode("utf-8")
+                    results.append({
+                        "rank": rank + 1,
+                        "user_id": int(uid),
+                        "score": int(score)
+                    })
+                if results:
+                    return results
+            except Exception:
+                pass
+
+        rows = (
+            UserChallengeProgress.objects.filter(status='completed')
+            .values('user_id')
+            .annotate(score=Sum('challenge__reward_points'))
+            .order_by('-score', 'user_id')[:50]
+        )
+        return [
+            {
+                "rank": index + 1,
+                "user_id": row['user_id'],
+                "score": int(row['score'] or 0),
+            }
+            for index, row in enumerate(rows)
+        ]
 
 
     @staticmethod
@@ -145,22 +168,19 @@ class GamificationService:
     @staticmethod
     def toggle_remedy_favorite(user_id: int, remedy_id: int):
         """切换补救方案的收藏状态"""
-        from apps.diet.models.mysql.preference import Preference
+        from apps.diet.models.mysql.preference import UserPreference
         from apps.diet.models.mysql.gamification import Remedy
-        from django.utils import timezone
         
         try:
             # 确认该 Remedy 存在
             if not Remedy.objects.filter(id=remedy_id).exists():
                 return {"error": "该补救方案不存在"}
                 
-            # 使用全局统一的 Preference 模型存储收藏行为
-            obj, created = Preference.objects.get_or_create(
+            obj, created = UserPreference.objects.get_or_create(
                 user_id=user_id,
                 target_id=str(remedy_id),
                 target_type='remedy',
-                action='favorite',
-                defaults={'created_at': timezone.now()}
+                action='like',
             )
             
             if not created:
@@ -189,10 +209,16 @@ class GamificationService:
             if not record:
                 return {"error": "未找到进行中的该挑战记录，请先加入挑战"}
             
-            # 更新进度
+            progress_val = max(0, min(int(progress_val), 100))
             record.progress = progress_val
-            record.save()
-                
+            update_fields = ['progress']
+            if progress_val >= 100 and record.status == 'pending':
+                record.status = 'completed'
+                record.completed_at = timezone.now()
+                update_fields.extend(['status', 'completed_at'])
+                GamificationService._increment_leaderboard(user.id, record.challenge.reward_points)
+            record.save(update_fields=update_fields)
+
             return {"id": record.id, "progress": record.progress, "status": record.status}
         except Exception as e:
-            return {"error": "进度更新失败"}    
+            return {"error": "进度更新失败"}

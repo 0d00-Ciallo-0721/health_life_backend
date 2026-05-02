@@ -70,13 +70,14 @@ class PreferenceService:
 
         # 3. 批量查询 MongoDB 餐厅并归一化
         if restaurant_ids:
-            restaurants = Restaurant.objects.filter(id__in=restaurant_ids)
+            restaurants = Restaurant.objects.filter(amap_id__in=restaurant_ids)
             for r in restaurants:
                 results.append({
-                    "id": str(r.id),
+                    "id": r.amap_id,
                     "type": "restaurant",
                     "name": getattr(r, 'name', "未知餐厅"),
-                    "image": getattr(r, 'image_url', getattr(r, 'image', "")),
+                    "image": r.photos[0] if getattr(r, 'photos', None) else "",
+                    "address": getattr(r, 'address', ""),
                     "calories": None,
                     "rating": getattr(r, 'rating', 5.0)
                 })
@@ -96,4 +97,4 @@ class PreferenceService:
                     "rating": None
                 })
 
-        return results        
+        return results

@@ -1,5 +1,6 @@
 import datetime
 from mongoengine.queryset.visitor import Q
+from bson import ObjectId
 from apps.diet.models import Recipe
 from apps.common.utils import INGREDIENT_SYNONYMS, normalize_ingredient_name
 # 跨域调用
@@ -28,7 +29,7 @@ class MatchingService:
         priority_ingredients = PantrySelector.get_priority_ingredients(user, cleanup_mode, scrap_mode)
 
         # 3. 构建 MongoDB 查询
-        query = Q()
+        query = Q(status=1)
         if (cleanup_mode or scrap_mode) and priority_ingredients:
             query = Q(ingredients_search__in=list(priority_ingredients))
         elif user_ingredients:
@@ -38,6 +39,9 @@ class MatchingService:
         if filters.get('tags'): query &= Q(keywords__in=filters['tags'])
         if filters.get('keyword'): query &= Q(name__icontains=filters['keyword'])
         if filters.get('difficulty'): query &= Q(difficulty=filters['difficulty'])
+        exclude_ids = [ObjectId(rid) for rid in filters.get('exclude_ids', []) if ObjectId.is_valid(str(rid))]
+        if exclude_ids: query &= Q(id__nin=exclude_ids)
+        if filters.get('allergens'): query &= Q(ingredients_search__nin=filters['allergens'])
         
         # 热量范围
         if filters.get('calorie_min'): query &= Q(calories__gte=int(filters['calorie_min']))
@@ -92,6 +96,8 @@ class MatchingService:
                     "id": str(r.id),
                     "name": r.name,
                     "match_score": score,
+                    "score": score,
+                    "score_breakdown": {"ingredient_match": score},
                     "missing_ingredients": list(missing),
                     "cooking_time": getattr(r, 'cooking_time', 15),
                     "difficulty": getattr(r, 'difficulty', "简单"),
@@ -99,6 +105,8 @@ class MatchingService:
                     "image": getattr(r, 'image_url', ""),
                     "ingredients": ings_detail,
                     "match_reason": match_reason,
+                    "recommend_type": "content",
+                    "algorithm_label": "冰箱食材匹配",
                     "tags": getattr(r, 'keywords', [])[:3]
                 })
             except Exception: continue

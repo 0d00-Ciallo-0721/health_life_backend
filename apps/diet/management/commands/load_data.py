@@ -94,7 +94,7 @@ class Command(BaseCommand):
         # 4. MySQL: 挑战进度与成就获取
         # ==========================================
         task, _ = ChallengeTask.objects.get_or_create(condition_code='log_breakfast', defaults={'title': '连续 7 天记录早餐', 'desc': '养成吃早餐的好习惯', 'reward_points': 50, 'is_active': True})
-        UserChallengeProgress.objects.update_or_create(user=user, challenge=task, defaults={'status': 'ongoing', 'progress': 3})
+        UserChallengeProgress.objects.update_or_create(user=user, challenge=task, defaults={'status': 'pending', 'progress': 3})
 
         achieve, _ = Achievement.objects.get_or_create(code='FIRST_LOG', defaults={'title': '初级记录员', 'desc': '完成第一条饮食记录', 'icon': ''})
         UserAchievement.objects.get_or_create(user=user, achievement=achieve)

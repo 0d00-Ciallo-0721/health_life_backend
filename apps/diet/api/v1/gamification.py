@@ -1,4 +1,4 @@
-from rest_framework.views import APIView
+﻿from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
@@ -8,7 +8,7 @@ from django.shortcuts import get_object_or_404
 import json
 from django.core.cache import cache
 from apps.diet.domains.tools.ai_service import AIService
-from apps.diet.models.mysql.gamification import ChallengeTask, Remedy, UserChallengeProgress, UserRemedyPlan, Achievement, UserAchievement
+from apps.diet.models.mysql.gamification import Achievement, UserAchievement, UserChallengeProgress, UserRemedyPlan
 from apps.diet.domains.gamification.services import GamificationService
 
 from apps.diet.models import ChallengeTask, Remedy, DailyIntake
@@ -427,15 +427,13 @@ class CarbonWeeklyView(APIView):
             curr = start_date + datetime.timedelta(days=i)
             c_str = str(curr)
             # 我们假设如果一个人一天吃少于他应有的碳排放，就叫saved。
-            # 这里简单起见：运动 offset 视作 saved，基础 saved = random mock based on real formula
             
             f_kg = daily_food_kg.get(c_str, 0)
             offset = daily_sport_offset.get(c_str, 0)
             
-            # 这里为了模拟好看的图表，将 offset 直接叠加
-            val_kg = f_kg - offset if f_kg > 0 else 0 
+            val_kg = max(f_kg - offset, 0)
             daily_data.append({"date": c_str, "val": round(val_kg, 2)})
-            total_saved += offset # 将运动拯救的碳排放累加
+            total_saved += max(offset, 0)
             
         data = {
             "total_saved": round(total_saved, 2),
@@ -558,13 +556,6 @@ class CarbonAchievementView(APIView):
                 "unlocked": a.code in unlocked_codes
             })
             
-        # 如果数据库中尚未配置 carbon_ 前缀的成就，提供兜底的默认展示数据，防止前端页面空窗报错
-        if not data:
-            data = [
-                {"code": "carbon_1", "title": "初级环保卫士", "desc": "累计减少碳排放 1kg", "unlocked": True},
-                {"code": "carbon_2", "title": "种树小能手", "desc": "累计等效种树 1 棵", "unlocked": False}
-            ]
-            
         return Response({"code": 200, "msg": "success", "data": data})    
     
 
@@ -625,9 +616,9 @@ class ChallengeTaskDetailView(APIView):
             "is_active": task.is_active,
             # 如果模型中有其他需要的字段（如时长、封面图等），可在此处补充
         }
-        
+
         return Response({
-            "code": 200, 
-            "msg": "success", 
+            "code": 200,
+            "msg": "success",
             "data": data
-        })    
+        })

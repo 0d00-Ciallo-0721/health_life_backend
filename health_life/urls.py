@@ -4,6 +4,7 @@ from drf_spectacular.views import SpectacularAPIView, SpectacularSwaggerView
 # [新增导入]
 from django.conf import settings
 from django.conf.urls.static import static
+from apps.diet.api.v1.discovery import RecipeDetailView, RestaurantDetailView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
@@ -14,7 +15,10 @@ urlpatterns = [
 
     # 业务路由
     path('api/v1/users/', include('apps.users.urls')),
+    path('api/v1/user/', include('apps.users.urls')),
     path('api/v1/diet/', include('apps.diet.urls')),
+    path('api/v1/recipe/<str:id>/', RecipeDetailView.as_view(), name='legacy_recipe_detail'),
+    path('api/v1/restaurant/<str:id>/', RestaurantDetailView.as_view(), name='legacy_restaurant_detail'),
     path('api/v1/', include('apps.diet.urls')),
     
     # 后台接口入口

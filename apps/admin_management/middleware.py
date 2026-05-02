@@ -1,7 +1,12 @@
-import json
+﻿import json
+import logging
+import sys
 import threading
+from django.conf import settings
 from django.utils.deprecation import MiddlewareMixin
 from apps.admin_management.models.audit import AuditLog
+
+logger = logging.getLogger(__name__)
 
 def save_audit_log_async(user_id, username, method, path, module, ip, req_body, status_code):
     """
@@ -21,7 +26,7 @@ def save_audit_log_async(user_id, username, method, path, module, ip, req_body, 
         )
     except Exception as e:
         # 日志记录失败不应影响主业务，输出到控制台或标准日志收集器
-        print(f"⚠️ [Audit Thread] 异步日志记录失败: {e}")
+        logger.warning("[Audit] async log write failed: %s", e)
 
 
 class AuditLogMiddleware(MiddlewareMixin):
@@ -68,12 +73,25 @@ class AuditLogMiddleware(MiddlewareMixin):
         except:
             module = 'unknown'
 
-        # 🚀 7. 启动异步守护线程进行 DB 写入，实现接口零阻塞
-        thread = threading.Thread(
-            target=save_audit_log_async,
-            args=(user_id, username, request.method, request.path, module, ip, req_body, response.status_code)
-        )
-        thread.daemon = True  # 设置为守护线程，不阻塞主进程退出
-        thread.start()
+        audit_args = (user_id, username, request.method, request.path, module, ip, req_body, response.status_code)
+        is_sqlite = settings.DATABASES['default']['ENGINE'] == 'django.db.backends.sqlite3'
+        is_test_run = 'test' in sys.argv
+        if is_sqlite or is_test_run:
+            save_audit_log_async(*audit_args)
+        else:
+            thread = threading.Thread(target=save_audit_log_async, args=audit_args)
+            thread.daemon = True
+            thread.start()
 
         return response
+
+
+class AdminApiCSRFFreeMiddleware(MiddlewareMixin):
+    """
+    后台管理接口使用 JWT Bearer Token，不依赖 Cookie Session。
+    仅对 /api/admin/ 放宽 CSRF 检查，方便独立 HTML 后台跨机器访问。
+    """
+
+    def process_request(self, request):
+        if request.path.startswith('/api/admin/'):
+            setattr(request, '_dont_enforce_csrf_checks', True)

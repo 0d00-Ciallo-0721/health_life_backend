@@ -1,10 +1,18 @@
 from rest_framework import serializers
 from apps.users.models import Profile 
 from apps.diet.models import UserPreference
+from apps.diet.domains.community.services import CommunityService
+from apps.diet.domains.gamification.services import GamificationService
+from apps.users.models import UserFollow
 
 class ProfileSerializer(serializers.ModelSerializer):
     # 显式声明 nickname 字段，关联到 user.nickname
     nickname = serializers.CharField(source='user.nickname', required=False)
+    follow_count = serializers.SerializerMethodField()
+    fans_count = serializers.SerializerMethodField()
+    like_count = serializers.SerializerMethodField()
+    badges = serializers.SerializerMethodField()
+    featured_badges = serializers.SerializerMethodField()
 
     class Meta:
         model = Profile
@@ -13,10 +21,48 @@ class ProfileSerializer(serializers.ModelSerializer):
             'nickname', 'avatar', 'signature', 'gender', 'height', 'weight', 'age', 
             'activity_level', 'diet_tags', 'allergens', 
             'daily_kcal_limit', 'goal_type', 'target_weight', 
-            'water_goal_cups', 'water_goal_ml', 'bmr'
+            'water_goal_cups', 'water_goal_ml', 'bmr',
+            'follow_count', 'fans_count', 'like_count', 'badges', 'featured_badges'
         ]
         # BMR 和 每日推荐摄入量由后端公式自动计算，不允许前端直接篡改
-        read_only_fields = ['daily_kcal_limit', 'bmr']
+        read_only_fields = [
+            'daily_kcal_limit', 'bmr', 'follow_count', 'fans_count',
+            'like_count', 'badges', 'featured_badges'
+        ]
+
+    def get_follow_count(self, instance):
+        return UserFollow.objects.filter(follower=instance.user).count()
+
+    def get_fans_count(self, instance):
+        return UserFollow.objects.filter(followed=instance.user).count()
+
+    def get_like_count(self, instance):
+        try:
+            profile = CommunityService.get_user_profile(instance.user_id, instance.user_id)
+            return profile.get("like_count", 0) if profile else 0
+        except Exception:
+            return 0
+
+    def get_badges(self, instance):
+        try:
+            achievements = GamificationService.get_merged_achievements(instance.user)
+        except Exception:
+            return []
+        return [
+            {
+                "id": achievement.get("id"),
+                "name": achievement.get("name"),
+                "icon": achievement.get("icon"),
+            }
+            for achievement in achievements
+            if achievement.get("unlocked")
+        ]
+
+    def get_featured_badges(self, instance):
+        try:
+            return GamificationService.get_user_featured_badges(instance.user_id)
+        except Exception:
+            return []
 
     def update(self, instance, validated_data):
         # 提取 nickname
@@ -75,6 +121,11 @@ class ProfileSerializer(serializers.ModelSerializer):
         # 则说明当前使用的是默认头像，我们需要从 User 表中把 URL 拿出来补齐给前端
         if not data.get('avatar') and instance.user.avatar:
             data['avatar'] = instance.user.avatar
+
+        avatar_url = data.get('avatar')
+        request = self.context.get('request')
+        if avatar_url and request and not str(avatar_url).startswith(('http://', 'https://')):
+            data['avatar'] = request.build_absolute_uri(avatar_url)
             
         return data
 

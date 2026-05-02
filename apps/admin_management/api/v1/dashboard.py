@@ -4,6 +4,7 @@ from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import timedelta
+from pymongo.errors import PyMongoError
 
 # 引入模型
 from apps.diet.models.mongo.recipe import Recipe as MongoRecipe
@@ -23,8 +24,14 @@ class DashboardSummaryView(APIView):
         
         # 1. 基础核心指标
         total_users = User.objects.count()
-        total_recipes = MongoRecipe.objects.count()
-        pending_audit = MongoRecipe.objects.filter(status=0).count()
+        try:
+            total_recipes = MongoRecipe.objects.count()
+            pending_audit = MongoRecipe.objects.filter(status=0).count()
+            mongo_available = True
+        except PyMongoError:
+            total_recipes = 0
+            pending_audit = 0
+            mongo_available = False
         new_users_today = User.objects.filter(date_joined__gte=today_start).count()
         active_records_today = DailyIntake.objects.filter(record_date=today_start.date()).count()
 
@@ -41,7 +48,7 @@ class DashboardSummaryView(APIView):
 
         return Response({
             "code": 200,
-            "msg": "success",
+            "msg": "success" if mongo_available else "MongoDB 服务未连接，菜谱统计已降级",
             "data": {
                 "cards": [
                     {
@@ -63,6 +70,7 @@ class DashboardSummaryView(APIView):
                     }
                 ],
                 "trend": trend_data, # 🚀 将趋势数据传给前端
-                "chart_placeholder": False 
+                "chart_placeholder": False,
+                "mongo_available": mongo_available,
             }
         })

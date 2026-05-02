@@ -29,6 +29,7 @@ class AdminLoginView(APIView):
                 'avatar': user.avatar if hasattr(user, 'avatar') else '',
                 'roles': roles
             },
+            'access_token': tokens['access'],
             'token': tokens['access'],
             'refresh_token': tokens['refresh']
         })

@@ -28,7 +28,7 @@ class CommunityService:
         if feed_type:
             query = query.filter(feed_type=feed_type)
             
-        feeds = query.order_by('-created_at').skip(skip).limit(page_size)
+        feeds = list(query.order_by('-created_at').skip(skip).limit(page_size))
         
         user_ids = list(set([feed.user_id for feed in feeds]))
         
@@ -47,6 +47,7 @@ class CommunityService:
             }
 
         saved_feed_ids = set()
+        liked_feed_ids = set()
         if current_user_id:
             try:
                 # 🚨 核心修复 1：修正导入模型名称及 action 枚举值
@@ -54,6 +55,9 @@ class CommunityService:
                 feed_ids_str = [str(f.id) for f in feeds]
                 saved_feed_ids = set(UserPreference.objects.filter(
                     user_id=current_user_id, target_type='feed', action='save', target_id__in=feed_ids_str
+                ).values_list('target_id', flat=True))
+                liked_feed_ids = set(UserPreference.objects.filter(
+                    user_id=current_user_id, target_type='feed', action='like', target_id__in=feed_ids_str
                 ).values_list('target_id', flat=True))
             except ImportError:
                 pass 
@@ -71,6 +75,7 @@ class CommunityService:
                 "created_at": feed.created_at.strftime('%Y-%m-%d %H:%M:%S'),
                 "sport_info": feed.sport_info, 
                 "is_saved": str(feed.id) in saved_feed_ids, 
+                "is_liked": str(feed.id) in liked_feed_ids,
                 "user": user_dict.get(feed.user_id, {"id": feed.user_id, "nickname": "未知用户", "avatar": "", "featured_badges": []})
             })
         return result
@@ -81,26 +86,48 @@ class CommunityService:
             feed = CommunityFeed.objects.get(id=feed_id)
         except CommunityFeed.DoesNotExist:
             return {"error": "动态不存在"}
-        
+
+        if action not in ['like', 'unlike']:
+            return {"error": "Invalid action"}
+
+        from apps.diet.models.mysql.preference import UserPreference
+
+        feed_id_str = str(feed_id)
+        if action == 'like':
+            _, changed = UserPreference.objects.get_or_create(
+                user_id=user_id,
+                target_id=feed_id_str,
+                target_type='feed',
+                action='like',
+            )
+            if changed:
+                feed.update(inc__likes_count=1)
+            is_liked = True
+        else:
+            deleted, _ = UserPreference.objects.filter(
+                user_id=user_id,
+                target_id=feed_id_str,
+                target_type='feed',
+                action='like',
+            ).delete()
+            if deleted and getattr(feed, 'likes_count', 0) > 0:
+                feed.update(dec__likes_count=1)
+            is_liked = False
+
         redis_client = getattr(cache, 'client', None)
-        key = f"diet_feed_like:{feed_id}"
-        
+        key = f"diet_feed_like:{feed_id_str}"
         if redis_client:
             try:
                 r = redis_client.get_client()
                 if action == 'like':
-                    added = r.sadd(key, user_id)
-                    if added: # 防止重复点赞增加计数
-                        feed.update(inc__likes_count=1)
+                    r.sadd(key, user_id)
                 else:
-                    removed = r.srem(key, user_id)
-                    if removed and feed.likes_count > 0:
-                        feed.update(dec__likes_count=1)
+                    r.srem(key, user_id)
             except Exception:
-                pass # 降级处理
+                pass
         
         feed.reload()
-        return {"likes_count": feed.likes_count}
+        return {"likes_count": feed.likes_count, "is_liked": is_liked}
 
     @staticmethod
     def add_comment(user_id, feed_id, content):
@@ -138,12 +165,12 @@ class CommunityService:
     @staticmethod
     def toggle_follow(follower_id, following_id, action):
         """关注或取消关注系统"""
-        from apps.users.models import User, UserFollow
+        from apps.users.models import UserFollow
         if action == 'follow':
-            UserFollow.objects.get_or_create(follower_id=follower_id, following_id=following_id)
+            UserFollow.objects.get_or_create(follower_id=follower_id, followed_id=following_id)
             return {"status": "followed"}
         elif action == 'unfollow':
-            UserFollow.objects.filter(follower_id=follower_id, following_id=following_id).delete()
+            UserFollow.objects.filter(follower_id=follower_id, followed_id=following_id).delete()
             return {"status": "unfollowed"}
         return {"error": "Invalid action"}    
     
@@ -158,15 +185,18 @@ class CommunityService:
 
         # 统计数据：粉丝数、关注数
         follow_count = UserFollow.objects.filter(follower_id=target_user_id).count()
-        fans_count = UserFollow.objects.filter(following_id=target_user_id).count()
+        fans_count = UserFollow.objects.filter(followed_id=target_user_id).count()
         
         # 跨库统计该用户在 MongoDB 中发布的动态总获赞数
-        feeds = CommunityFeed.objects.filter(user_id=target_user_id)
-        like_count = sum(feed.likes_count for feed in feeds)
+        try:
+            feeds = CommunityFeed.objects.filter(user_id=target_user_id)
+            like_count = sum(feed.likes_count for feed in feeds)
+        except Exception:
+            like_count = 0
 
         is_followed = False
         if current_user_id:
-            is_followed = UserFollow.objects.filter(follower_id=current_user_id, following_id=target_user_id).exists()
+            is_followed = UserFollow.objects.filter(follower_id=current_user_id, followed_id=target_user_id).exists()
 
         avatar = target_user.profile.avatar.url if (hasattr(target_user, 'profile') and target_user.profile and target_user.profile.avatar) else getattr(target_user, 'avatar', '')
         signature = target_user.profile.signature if hasattr(target_user, 'profile') else ""
@@ -196,9 +226,13 @@ class CommunityService:
             if '_id' in feed_data:
                 del feed_data['_id']
             
-            feed_data['is_liked'] = current_user_id in getattr(feed, 'likes', [])
-            
             # 修正 action
+            feed_data['is_liked'] = UserPreference.objects.filter(
+                user_id=current_user_id,
+                target_id=feed_id,
+                target_type='feed',
+                action='like'
+            ).exists()
             feed_data['is_saved'] = UserPreference.objects.filter(
                 user_id=current_user_id, 
                 target_id=feed_id, 
@@ -267,18 +301,22 @@ class CommunityService:
     @classmethod
     def report_feed(cls, user_id: int, feed_id: str, reason: str):
         """创建举报记录"""
-        from apps.diet.models.mongo.community import CommunityFeed
-        from apps.admin_management.models.audit import AuditLog # 假设举报走通用审计或专有举报表
+        from apps.admin_management.models.audit import AuditLog
+        from apps.users.models import User
         
         try:
             feed = CommunityFeed.objects.get(id=feed_id)
             
-            # 记录用户的举报行为 (如果项目中存在专门的 Report 模型请替换 AuditLog)
+            reporter = User.objects.filter(id=user_id).first()
             AuditLog.objects.create(
-                user_id=user_id,
-                action="REPORT_FEED",
-                target_id=feed_id,
-                details={"reason": reason}
+                operator=reporter,
+                operator_name=reporter.username if reporter else f"user:{user_id}",
+                method="POST",
+                path=f"/api/v1/diet/community/feed/{feed_id}/report/",
+                module="community_report",
+                ip_address=None,
+                body={"feed_id": str(feed_id), "reason": reason},
+                response_code=200,
             )
             
             # 给帖子增加被举报的权重计数 (可选策略)
@@ -286,4 +324,4 @@ class CommunityService:
             
             return {"status": "reported"}
         except Exception as e:
-            return {"error": "帖子不存在或处理失败"}    
+            return {"error": "帖子不存在或处理失败"}

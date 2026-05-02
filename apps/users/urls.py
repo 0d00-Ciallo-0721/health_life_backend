@@ -3,12 +3,13 @@ from django.urls import path
 from .views import (
     WeChatLoginView, UserMetaView, UserProfileView, 
     UserFollowView, UserPostsView, LogoutView,
-    ProfileUpdateView  # [新增导入]
+    ProfileUpdateView, CurrentUserAccountView  # [新增导入]
 )
 
 urlpatterns = [
     path('login/', WeChatLoginView.as_view(), name='wechat_login'),
     path('logout/', LogoutView.as_view(), name='user_logout'),
+    path('me/', CurrentUserAccountView.as_view(), name='current_user_account'),
     path('meta/', UserMetaView.as_view(), name='user_meta'),
     
     # [新增] 修改个人档案（含头像上传）: POST /api/v1/user/profile/

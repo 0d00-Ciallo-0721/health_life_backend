@@ -1,7 +1,8 @@
-from rest_framework import viewsets, serializers
+﻿from rest_framework import viewsets, serializers
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
-from django.db.models import Count
+from django.db.models import Count, Q
+from django.utils.text import slugify
 
 from apps.diet.models.mysql.gamification import Achievement, ChallengeTask, Remedy
 from apps.admin_management.permissions import IsGameAdmin
@@ -45,20 +46,53 @@ class BaseAdminViewSet(viewsets.ModelViewSet):
 class AchievementAdminSerializer(serializers.ModelSerializer):
     # 动态附加字段：解锁该勋章的总人数
     unlocked_count = serializers.IntegerField(read_only=True, default=0)
+    category = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_category(self, value):
+        valid_values = {choice for choice, _ in Achievement._meta.get_field('category').choices}
+        return value if value in valid_values else 'special'
 
     class Meta:
         model = Achievement
         fields = '__all__'
 
 class ChallengeTaskAdminSerializer(serializers.ModelSerializer):
+    desc = serializers.CharField(required=False, allow_blank=True)
+    description = serializers.CharField(write_only=True, required=False, allow_blank=True)
+    condition_code = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = ChallengeTask
-        fields = '__all__'
+        fields = ['id', 'title', 'task_type', 'condition_code', 'reward_points', 'is_active', 'desc', 'description']
+
+    def validate(self, attrs):
+        description = attrs.pop('description', None)
+        attrs['desc'] = description or attrs.get('desc') or attrs.get('title', '')
+        attrs['condition_code'] = attrs.get('condition_code') or slugify(attrs.get('title', ''), allow_unicode=True).replace('-', '_') or 'task'
+        return attrs
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['description'] = data.get('desc', '')
+        return data
 
 class RemedyAdminSerializer(serializers.ModelSerializer):
+    desc = serializers.CharField(required=False, allow_blank=True)
+    description = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
     class Meta:
         model = Remedy
-        fields = '__all__'
+        fields = ['id', 'scenario', 'title', 'desc', 'description', 'points_cost', 'order']
+
+    def validate(self, attrs):
+        description = attrs.pop('description', None)
+        attrs['desc'] = description or attrs.get('desc') or attrs.get('title', '')
+        return attrs
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        data['description'] = data.get('desc', '')
+        return data
 
 
 # ==========================================
@@ -74,9 +108,13 @@ class AchievementAdminViewSet(BaseAdminViewSet):
 
     def get_queryset(self):
         # 核心：使用 Left Join 关联 UserAchievement 表，按成就 ID 聚合统计人数
-        return Achievement.objects.annotate(
+        queryset = Achievement.objects.annotate(
             unlocked_count=Count('userachievement')
         ).order_by('-id')
+        keyword = self.request.query_params.get('search', '')
+        if keyword:
+            queryset = queryset.filter(Q(title__icontains=keyword) | Q(code__icontains=keyword))
+        return queryset
 
 
 class ChallengeTaskAdminViewSet(BaseAdminViewSet):
@@ -86,7 +124,16 @@ class ChallengeTaskAdminViewSet(BaseAdminViewSet):
     """
     permission_classes = [IsAuthenticated, IsGameAdmin]
     serializer_class = ChallengeTaskAdminSerializer
-    queryset = ChallengeTask.objects.all().order_by('-id')
+
+    def get_queryset(self):
+        queryset = ChallengeTask.objects.all().order_by('-id')
+        keyword = self.request.query_params.get('search', '')
+        task_type = self.request.query_params.get('task_type', '')
+        if keyword:
+            queryset = queryset.filter(title__icontains=keyword)
+        if task_type:
+            queryset = queryset.filter(task_type=task_type)
+        return queryset
 
 
 class RemedyAdminViewSet(BaseAdminViewSet):
@@ -95,4 +142,10 @@ class RemedyAdminViewSet(BaseAdminViewSet):
     """
     permission_classes = [IsAuthenticated, IsGameAdmin]
     serializer_class = RemedyAdminSerializer
-    queryset = Remedy.objects.all().order_by('-id')
+
+    def get_queryset(self):
+        queryset = Remedy.objects.all().order_by('-id')
+        scenario = self.request.query_params.get('scenario', '')
+        if scenario:
+            queryset = queryset.filter(scenario=scenario)
+        return queryset

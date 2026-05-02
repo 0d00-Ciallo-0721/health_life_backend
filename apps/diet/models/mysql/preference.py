@@ -6,10 +6,13 @@ class UserPreference(models.Model):
     ACTION_CHOICES = (
         ('like', '收藏/喜欢'),
         ('block', '拉黑/不吃'),
+        ('save', '保存'),
     )
     TYPE_CHOICES = (
         ('recipe', '菜谱'),
         ('restaurant', '餐厅'),
+        ('feed', '动态'),
+        ('remedy', '补救方案'),
     )
 
     user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
@@ -20,7 +23,7 @@ class UserPreference(models.Model):
 
     class Meta:
         db_table = 'diet_userpreference'
-        unique_together = ('user', 'target_id', 'action') 
+        unique_together = ('user', 'target_id', 'target_type', 'action')
         indexes = [
             models.Index(fields=['user', 'action']),
         ]

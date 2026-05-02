@@ -3,12 +3,12 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from apps.diet.models import WeightRecord
 from django.db.models import Sum
-from apps.diet.models.mysql.journal import WaterIntake, WaterEvent # [新增] 导入饮水模型
+from apps.diet.models.mysql.journal import DailyIntake, WaterIntake, WaterEvent # [新增] 导入饮水模型
 from apps.diet.domains.journal.intake_service import IntakeService
 from apps.diet.domains.journal.workout_service import WorkoutService
 from apps.diet.domains.journal.selectors import JournalSelector
 from apps.diet.domains.analytics.report_service import ReportService
-from apps.diet.serializers.journal import WorkoutRecordSerializer
+from apps.diet.serializers.journal import DailyIntakeSerializer, WorkoutRecordSerializer
 from apps.diet.models import WeightRecord
 
 class LogIntakeView(APIView):
@@ -53,6 +53,42 @@ class LogIntakeView(APIView):
 
 class DietLogDetailView(APIView):
     permission_classes = [IsAuthenticated]
+
+    def get(self, request, pk):
+        try:
+            record = DailyIntake.objects.get(id=pk, user=request.user)
+        except DailyIntake.DoesNotExist:
+            return Response({"code": 404, "msg": "记录不存在"}, status=404)
+
+        serializer = DailyIntakeSerializer(record)
+        return Response({"code": 200, "msg": "success", "data": serializer.data})
+
+    def patch(self, request, pk):
+        try:
+            record = DailyIntake.objects.get(id=pk, user=request.user)
+        except DailyIntake.DoesNotExist:
+            return Response({"code": 404, "msg": "记录不存在"}, status=404)
+
+        allowed_fields = {
+            "food_name",
+            "meal_time",
+            "source_type",
+            "source_id",
+            "calories",
+            "macros",
+            "exact_time",
+        }
+        update_data = {key: value for key, value in request.data.items() if key in allowed_fields}
+        if not update_data:
+            return Response({"code": 400, "msg": "没有可更新字段"}, status=400)
+
+        serializer = DailyIntakeSerializer(record, data=update_data, partial=True)
+        if not serializer.is_valid():
+            return Response({"code": 400, "msg": serializer.errors}, status=400)
+
+        serializer.save()
+        return Response({"code": 200, "msg": "更新成功", "data": serializer.data})
+
     def delete(self, request, pk):
         success = IntakeService.delete_intake(request.user, pk)
         if success:

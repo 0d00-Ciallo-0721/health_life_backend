@@ -18,7 +18,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AlterUniqueTogether(
             name="userfollow",
-            unique_together={("follower", "followed")},
+            unique_together=set(),
         ),
         migrations.AddField(
             model_name="userfollow",
@@ -54,5 +54,9 @@ class Migration(migrations.Migration):
         migrations.RemoveField(
             model_name="userfollow",
             name="following",
+        ),
+        migrations.AlterUniqueTogether(
+            name="userfollow",
+            unique_together={("follower", "followed")},
         ),
     ]

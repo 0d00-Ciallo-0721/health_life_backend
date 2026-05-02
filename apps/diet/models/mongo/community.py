@@ -23,6 +23,8 @@ class CommunityFeed(Document):
     
     likes_count = IntField(default=0)
     comments_count = IntField(default=0)
+    save_count = IntField(default=0)
+    report_count = IntField(default=0)
     created_at = DateTimeField(default=datetime.datetime.utcnow)
 
     is_hidden = BooleanField(default=False)

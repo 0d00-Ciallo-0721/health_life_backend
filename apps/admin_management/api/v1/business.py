@@ -1,10 +1,13 @@
-from rest_framework import viewsets, status
+﻿from rest_framework import viewsets, status
 from rest_framework.views import APIView 
+import logging
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, IsAdminUser
 from django.contrib.auth import get_user_model
+from django.db.models import Q
 from bson import ObjectId
+from pymongo.errors import PyMongoError
 from apps.admin_management.models.notification import Notification 
 
 # 引入 Models
@@ -27,6 +30,7 @@ from apps.admin_management.serializers.business_s import (
 from apps.admin_management.permissions import RBACPermission
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
 # 🚀 [新增核心函数]：MongoEngine 通用分页器
 def paginate_mongo_queryset(request, queryset, serializer_class):
     """
@@ -56,6 +60,30 @@ def paginate_mongo_queryset(request, queryset, serializer_class):
     }
 
 
+def build_empty_mongo_page(request):
+    try:
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('size', 20))
+    except ValueError:
+        page = 1
+        page_size = 20
+    return {
+        "total": 0,
+        "page": page,
+        "size": page_size,
+        "list": []
+    }
+
+
+def mongo_list_unavailable_response(request, message):
+    page_data = build_empty_mongo_page(request)
+    return Response({"code": 200, "msg": message, "data": page_data["list"], "pagination": page_data})
+
+
+def mongo_action_unavailable_response(message="MongoDB 服务未连接，当前操作不可用"):
+    return Response({"code": 503, "msg": message}, status=503)
+
+
 class UserManageViewSet(viewsets.ModelViewSet):
     """
     用户管理：查看列表、禁用/启用用户
@@ -69,7 +97,7 @@ class UserManageViewSet(viewsets.ModelViewSet):
         qs = super().get_queryset()
         keyword = self.request.query_params.get('search', '')
         if keyword:
-            qs = qs.filter(username__icontains=keyword) | qs.filter(nickname__icontains=keyword)
+            qs = qs.filter(Q(username__icontains=keyword) | Q(nickname__icontains=keyword))
         return qs
 
     # 权限映射
@@ -137,18 +165,32 @@ class RecipeAuditViewSet(viewsets.ViewSet):
     }
 
     def list(self, request):
-        """获取待审核菜谱列表 (已接入通用分页器)"""
-        # 注意: 如果你已经在上一步引入了 paginate_mongo_queryset，这里继续使用它
-        recipes = MongoRecipe.objects.all().order_by('-created_at')
-        # 如果未引入分页函数，请使用切片；如果已引入，请替换为 paginate_mongo_queryset
-        serializer = MongoRecipeAuditSerializer(recipes[:20], many=True)
-        return Response({"code": 200, "data": serializer.data})
+        """获取待审核菜谱列表"""
+        try:
+            recipes = MongoRecipe.objects.all().order_by('-created_at')
+            keyword = request.query_params.get('search', '')
+            if keyword:
+                recipes = recipes.filter(name__icontains=keyword)
+
+            status_filter = request.query_params.get('status')
+            if status_filter not in (None, ''):
+                try:
+                    recipes = recipes.filter(status=int(status_filter))
+                except ValueError:
+                    return Response({"code": 400, "msg": "status 参数格式错误"}, status=400)
+
+            page_data = paginate_mongo_queryset(request, recipes, MongoRecipeAuditSerializer)
+            return Response({"code": 200, "data": page_data["list"], "pagination": page_data})
+        except PyMongoError:
+            return mongo_list_unavailable_response(request, "MongoDB 服务未连接，菜谱审核列表已降级为空")
 
     @action(detail=True, methods=['post'])
     def audit(self, request, pk=None):
         """审核通过/拒绝"""
         try:
             recipe = MongoRecipe.objects.get(id=ObjectId(pk))
+        except PyMongoError:
+            return mongo_action_unavailable_response("MongoDB 服务未连接，当前无法审核菜谱")
         except Exception:
             return Response({"msg": "菜谱不存在"}, status=404)
         
@@ -171,7 +213,7 @@ class RecipeAuditViewSet(viewsets.ViewSet):
         # 🛡️ 容错防御：处理"孤岛数据"
         if not target_user:
             # 即便作者信息丢失，我们依然要完成审核状态的变更，但不触发崩溃
-            print(f"⚠️ [Data Inconsistency] 菜谱 ID:{pk} 对应的作者在 MySQL 中丢失。跳过发信。")
+            logger.warning("Recipe author missing in MySQL for recipe id %s; notification skipped.", pk)
         
         # ------------------------------------------------------------------
         # 状态机流转与通知派发
@@ -222,25 +264,31 @@ class RestaurantViewSet(viewsets.ViewSet):
 
     def list(self, request):
         """获取商家列表"""
-        query = request.query_params.get('search', '')
-        if query:
-            queryset = Restaurant.objects(name__icontains=query)
-        else:
-            queryset = Restaurant.objects.all()
-        
-        queryset = queryset.order_by('-cached_at')
-        
-        # 🚀 使用分页器
-        data = paginate_mongo_queryset(request, queryset, MongoRestaurantSerializer)
-        return Response({"code": 200, "data": data})
+        try:
+            query = request.query_params.get('search', '')
+            if query:
+                queryset = Restaurant.objects(name__icontains=query)
+            else:
+                queryset = Restaurant.objects.all()
+
+            queryset = queryset.order_by('-cached_at')
+
+            # 🚀 使用分页器
+            page_data = paginate_mongo_queryset(request, queryset, MongoRestaurantSerializer)
+            return Response({"code": 200, "data": page_data["list"], "pagination": page_data})
+        except PyMongoError:
+            return mongo_list_unavailable_response(request, "MongoDB 服务未连接，商家列表已降级为空")
 
     def create(self, request):
         """新增商家"""
-        serializer = MongoRestaurantSerializer(data=request.data)
-        if serializer.is_valid():
-            serializer.save()
-            return Response({"code": 200, "msg": "创建成功", "data": serializer.data})
-        return Response({"code": 400, "msg": serializer.errors})
+        try:
+            serializer = MongoRestaurantSerializer(data=request.data)
+            if serializer.is_valid():
+                serializer.save()
+                return Response({"code": 200, "msg": "创建成功", "data": serializer.data})
+            return Response({"code": 400, "msg": serializer.errors})
+        except PyMongoError:
+            return mongo_action_unavailable_response("MongoDB 服务未连接，当前无法创建商家")
 
     def retrieve(self, request, pk=None):
         """获取详情"""
@@ -248,6 +296,8 @@ class RestaurantViewSet(viewsets.ViewSet):
             obj = Restaurant.objects.get(id=ObjectId(pk))
             serializer = MongoRestaurantSerializer(obj)
             return Response({"code": 200, "data": serializer.data})
+        except PyMongoError:
+            return mongo_action_unavailable_response("MongoDB 服务未连接，当前无法读取商家详情")
         except Exception:
             return Response({"code": 404, "msg": "商家不存在"})
 
@@ -260,6 +310,8 @@ class RestaurantViewSet(viewsets.ViewSet):
                 serializer.save()
                 return Response({"code": 200, "msg": "更新成功", "data": serializer.data})
             return Response({"code": 400, "msg": serializer.errors})
+        except PyMongoError:
+            return mongo_action_unavailable_response("MongoDB 服务未连接，当前无法更新商家")
         except Exception:
             return Response({"code": 404, "msg": "商家不存在"})
 
@@ -269,6 +321,8 @@ class RestaurantViewSet(viewsets.ViewSet):
             obj = Restaurant.objects.get(id=ObjectId(pk))
             obj.delete()
             return Response({"code": 200, "msg": "删除成功"})
+        except PyMongoError:
+            return mongo_action_unavailable_response("MongoDB 服务未连接，当前无法删除商家")
         except Exception:
             return Response({"code": 404, "msg": "商家不存在"})
         
@@ -366,23 +420,28 @@ class CommunityFeedViewSet(viewsets.ViewSet):
     }
 
     def list(self, request):
-        query = request.query_params.get('search', '')
-        if query:
-            queryset = CommunityFeed.objects(content__icontains=query)
-        else:
-            queryset = CommunityFeed.objects.all()
+        try:
+            query = request.query_params.get('search', '')
+            if query:
+                queryset = CommunityFeed.objects(content__icontains=query)
+            else:
+                queryset = CommunityFeed.objects.all()
+
+            queryset = queryset.order_by('-created_at')
             
-        queryset = queryset.order_by('-created_at')
-        
-        # 🚀 使用分页器
-        data = paginate_mongo_queryset(request, queryset, MongoCommunityFeedSerializer)
-        return Response({"code": 200, "data": data})
+            # 🚀 使用分页器
+            page_data = paginate_mongo_queryset(request, queryset, MongoCommunityFeedSerializer)
+            return Response({"code": 200, "data": page_data["list"], "pagination": page_data})
+        except PyMongoError:
+            return mongo_list_unavailable_response(request, "MongoDB 服务未连接，动态审核列表已降级为空")
 
     def destroy(self, request, pk=None):
         try:
             obj = CommunityFeed.objects.get(id=ObjectId(pk))
             obj.delete() # Comment 设置了 cascade，关联评论会自动删除
             return Response({"code": 200, "msg": "违规动态删除成功"})
+        except PyMongoError:
+            return mongo_action_unavailable_response("MongoDB 服务未连接，当前无法删除动态")
         except Exception:
             return Response({"code": 404, "msg": "动态不存在"})
 
@@ -397,17 +456,20 @@ class CommentViewSet(viewsets.ViewSet):
     }
 
     def list(self, request):
-        query = request.query_params.get('search', '')
-        if query:
-            queryset = Comment.objects(content__icontains=query)
-        else:
-            queryset = Comment.objects.all()
+        try:
+            query = request.query_params.get('search', '')
+            if query:
+                queryset = Comment.objects(content__icontains=query)
+            else:
+                queryset = Comment.objects.all()
+
+            queryset = queryset.order_by('-created_at')
             
-        queryset = queryset.order_by('-created_at')
-        
-        # 🚀 使用分页器
-        data = paginate_mongo_queryset(request, queryset, MongoCommentSerializer)
-        return Response({"code": 200, "data": data})
+            # 🚀 使用分页器
+            page_data = paginate_mongo_queryset(request, queryset, MongoCommentSerializer)
+            return Response({"code": 200, "data": page_data["list"], "pagination": page_data})
+        except PyMongoError:
+            return mongo_list_unavailable_response(request, "MongoDB 服务未连接，评论审核列表已降级为空")
 
     def destroy(self, request, pk=None):
         try:
@@ -419,6 +481,8 @@ class CommentViewSet(viewsets.ViewSet):
                 
             obj.delete()
             return Response({"code": 200, "msg": "违规评论删除成功"})
+        except PyMongoError:
+            return mongo_action_unavailable_response("MongoDB 服务未连接，当前无法删除评论")
         except Exception:
             return Response({"code": 404, "msg": "评论不存在"})
         
@@ -442,13 +506,14 @@ class JournalMacroStatsView(APIView):
         water_records = WaterIntake.objects.filter(date=today).select_related('user__profile')
         total_water_users = water_records.count()
         completed_users = 0
-        total_cups = 0
+        total_water_ml = 0
         
         for record in water_records:
-            total_cups += record.cups
-            # 动态判断用户的目标，若无 Profile 则按默认 8 杯算
-            goal = record.user.profile.water_goal_cups if (hasattr(record.user, 'profile') and record.user.profile) else 8
-            if record.cups >= goal:
+            total_water_ml += record.total_ml
+            goal = 2000
+            if hasattr(record.user, 'profile') and record.user.profile:
+                goal = getattr(record.user.profile, 'water_goal_ml', 0) or (record.user.profile.water_goal_cups * 250)
+            if record.total_ml >= goal:
                 completed_users += 1
                 
         water_completion_rate = round(completed_users / total_water_users * 100, 2) if total_water_users > 0 else 0.0
@@ -464,7 +529,8 @@ class JournalMacroStatsView(APIView):
                 "total_users_logged": total_water_users,
                 "completed_users": completed_users,
                 "completion_rate_pct": water_completion_rate,
-                "total_cups_drank": total_cups
+                "total_ml_drank": total_water_ml,
+                "total_cups_drank": round(total_water_ml / 250, 1)
             },
             "intake_stats": {
                 "total_users_logged": intake_users_count,
@@ -473,4 +539,4 @@ class JournalMacroStatsView(APIView):
             }
         }
         
-        return Response({"code": 200, "msg": "success", "data": data})        
+        return Response({"code": 200, "msg": "success", "data": data})

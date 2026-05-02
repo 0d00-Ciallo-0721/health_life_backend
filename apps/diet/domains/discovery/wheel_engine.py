@@ -1,7 +1,5 @@
-import random
-from bson import ObjectId
-from mongoengine.queryset.visitor import Q
 from apps.diet.models import Recipe
+from apps.diet.domains.discovery.recommendation_service import RecommendationService
 from apps.diet.domains.preferences.selectors import PreferenceSelector
 
 class WheelEngine:
@@ -43,51 +41,89 @@ class WheelEngine:
         
         # 1. 过滤黑名单
         blocked_ids = PreferenceSelector.get_blocked_ids(user)
-        safe_blocked_ids = [bid for bid in blocked_ids if ObjectId.is_valid(bid)]
         
         # 2. 过滤过敏源
-        profile = getattr(user, 'profile', None)
+        try:
+            profile = getattr(user, 'profile', None)
+        except Exception:
+            profile = None
         allergens = set(profile.allergens) if profile else set()
-        
-        base_query = Q(id__nin=safe_blocked_ids)
-        if cuisine: base_query &= Q(keywords=cuisine)
-        if flavor and flavor not in ["热门", "家常"]: base_query &= Q(keywords=flavor)
-        if allergens: base_query &= Q(ingredients_search__nin=list(allergens))
+
+        tags = []
+        if cuisine:
+            tags.append(cuisine)
+        if flavor and flavor not in ["热门", "家常"]:
+            tags.append(flavor)
+
+        recommendations = RecommendationService.get_recommendations(
+            user,
+            strategy="hybrid",
+            page=1,
+            page_size=60,
+            filters={
+                "tags": tags,
+                "exclude_ids": blocked_ids,
+                "allergens": list(allergens),
+            },
+        )
 
         # 3. 黄金比例: 3健康 + 2偏好 + 1放纵
-        health_limit = (profile.daily_kcal_limit / 3) if profile else 600
+        health_limit = WheelEngine._safe_health_limit(profile)
+        health_pool = [item for item in recommendations if WheelEngine._safe_calories(item) <= health_limit]
+        indulgent_pool = [item for item in recommendations if WheelEngine._safe_calories(item) > health_limit]
         
         # A. 健康池
-        WheelEngine._pick_from_pool(candidates, seen_ids, 
-            base_query & Q(calories__lte=health_limit), count=3, reason="健康轻食")
+        WheelEngine._pick_ranked_candidates(candidates, seen_ids, health_pool, count=3, reason="健康轻食")
             
-        # B. 偏好池 (剩余的随机)
-        WheelEngine._pick_from_pool(candidates, seen_ids, base_query, count=2, reason="口味匹配")
+        # B. 偏好池
+        WheelEngine._pick_ranked_candidates(candidates, seen_ids, recommendations, count=2, reason="口味匹配")
             
         # C. 放纵池
-        WheelEngine._pick_from_pool(candidates, seen_ids, 
-            base_query & Q(calories__gt=health_limit), count=1, reason="偶尔放纵")
+        WheelEngine._pick_ranked_candidates(candidates, seen_ids, indulgent_pool, count=1, reason="偶尔放纵")
             
         # D. 补齐
         if len(candidates) < 6:
-            WheelEngine._pick_from_pool(candidates, seen_ids, base_query, count=6-len(candidates), reason="为您推荐")
+            WheelEngine._pick_ranked_candidates(candidates, seen_ids, recommendations, count=6-len(candidates), reason="为您推荐")
             
         return candidates
 
     @staticmethod
-    def _pick_from_pool(candidates, seen_ids, query, count, reason):
+    def _pick_ranked_candidates(candidates, seen_ids, pool, count, reason):
+        picked = 0
+        for item in pool:
+            if picked >= count:
+                break
+            recipe_id = item.get("id")
+            if not recipe_id or recipe_id in seen_ids:
+                continue
+            seen_ids.add(recipe_id)
+            picked += 1
+            candidates.append({
+                "id": recipe_id,
+                "type": "recipe",
+                "name": item.get("name"),
+                "image": item.get("image", ""),
+                "calories": item.get("calories", 350),
+                "match_reason": reason,
+                "difficulty": item.get("difficulty", "简单"),
+                "time": item.get("cooking_time", item.get("time", 15)),
+                "recommend_type": item.get("recommend_type", "hybrid"),
+                "algorithm_label": item.get("algorithm_label", "混合推荐"),
+                "score": item.get("score", item.get("match_score", 0)),
+            })
+
+    @staticmethod
+    def _safe_health_limit(profile):
+        if not profile:
+            return 600
         try:
-            pool = list(Recipe.objects(query).limit(50))
-            pool = [r for r in pool if r.id not in seen_ids]
-            if pool:
-                selected = random.sample(pool, min(len(pool), count))
-                for r in selected:
-                    seen_ids.add(r.id)
-                    candidates.append({
-                        "id": str(r.id), "type": "recipe", "name": r.name,
-                        "image": getattr(r, 'image_url', ""), "calories": getattr(r, 'calories', 350),
-                        "match_reason": reason,
-                        "difficulty": getattr(r, 'difficulty', "简单"),
-                        "time": getattr(r, 'cooking_time', 15)
-                    })
-        except Exception: pass
+            return (int(getattr(profile, "daily_kcal_limit", 0)) or 1800) / 3
+        except (TypeError, ValueError):
+            return 600
+
+    @staticmethod
+    def _safe_calories(item):
+        try:
+            return int(item.get("calories", 350) or 350)
+        except (TypeError, ValueError):
+            return 350

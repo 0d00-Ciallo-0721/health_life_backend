@@ -189,6 +189,25 @@ python manage.py runserver
 
 ```
 
+### 涓ょ數鑴戣仈璋冿紙灞€鍩熺綉锛?
+
+濡傛灉寰俊灏忕▼搴忓墠绔拰 Django 鍚庣鍦ㄤ笉鍚岀數鑴戜笂锛岃鎸変笅闈㈡柟寮忛厤缃細
+
+1. 鍚庣鐢佃剳鍚姩 `start_lan.bat`锛屾垨鎵ц `python manage.py runserver 0.0.0.0:8000`
+2. 灏嗗悗绔數鑴戠殑灞€鍩熺綉 IP 鍔犲埌 `.env` 涓殑 `ALLOWED_HOSTS`
+3. 灏嗕笟鍔″墠绔墍鍦ㄧ數鑴戠殑鍦板潃鍔犲埌 `.env` 涓殑 `CORS_ALLOWED_ORIGINS`
+4. 濡傛灉 HTML 鍚庡彴闇€瑕佽法鍩熸彁浜よ〃鍗曟垨鐧诲綍锛屽悓鏃跺姞鍏?`CSRF_TRUSTED_ORIGINS`
+5. 鍦ㄥ墠绔腑灏?API 鍩哄湴鍧€ 鏀逛负 `http://鍚庣鐢佃剳IP:8000`
+6. 纭繚 Windows 闃茬伀澧欐斁琛?8000 绔彛
+
+绀轰緥锛?
+
+```ini
+ALLOWED_HOSTS=127.0.0.1,localhost,192.168.1.10
+CORS_ALLOWED_ORIGINS=http://192.168.1.20:3000,http://192.168.1.20
+CSRF_TRUSTED_ORIGINS=http://192.168.1.10:8000,http://192.168.1.20:3000
+```
+
 
 
 ---

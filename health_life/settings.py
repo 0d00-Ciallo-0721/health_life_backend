@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 from datetime import timedelta
@@ -10,11 +11,36 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # ✅ 1. 加载 .env 文件
 load_dotenv(BASE_DIR / '.env')
 
-# ✅ 2. 读取密钥 (优先从环境变量读，读不到用默认值)
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-fallback-key')
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
-# 开发与穿透调试期允许所有主机，生产环境建议在 .env 中配置具体域名
-ALLOWED_HOSTS = ['*']
+logger = logging.getLogger(__name__)
+
+
+def env_bool(name, default=False):
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def env_list(name, default=None):
+    value = os.environ.get(name)
+    if value is None:
+        return list(default or [])
+    return [item.strip() for item in value.split(',') if item.strip()]
+
+# ✅ 2. 读取密钥与安全开关
+DEBUG = env_bool('DEBUG', False)
+SECRET_KEY = os.environ.get('SECRET_KEY')
+if not SECRET_KEY:
+    if DEBUG:
+        SECRET_KEY = 'django-insecure-dev-only-change-me'
+    else:
+        raise RuntimeError('SECRET_KEY must be configured when DEBUG is disabled')
+ALLOWED_HOSTS = env_list('ALLOWED_HOSTS', ['127.0.0.1', 'localhost'])
+PUBLIC_TUNNEL_HOSTS = env_list('PUBLIC_TUNNEL_HOSTS', ['47.95.215.220', '47.93.45.198'])
+ALLOWED_HOSTS = list(dict.fromkeys(ALLOWED_HOSTS + PUBLIC_TUNNEL_HOSTS))
+ALLOW_TEST_WECHAT_LOGIN = env_bool('ALLOW_TEST_WECHAT_LOGIN', DEBUG)
+ENABLE_LBS_MOCK_FALLBACK = env_bool('ENABLE_LBS_MOCK_FALLBACK', DEBUG)
+ENABLE_AI_SERVICES = env_bool('ENABLE_AI_SERVICES', True)
 
 # Application definition
 INSTALLED_APPS = [
@@ -43,6 +69,7 @@ MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
+    'apps.admin_management.middleware.AdminApiCSRFFreeMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
@@ -51,10 +78,10 @@ MIDDLEWARE = [
 ]
 
 # --- 🚀 3. 智能数据库配置 (Smart Database Switch) ---
-USE_MYSQL = os.environ.get('FORCE_MYSQL', 'False') == 'True'
+USE_MYSQL = env_bool('FORCE_MYSQL', False)
 
 if USE_MYSQL:
-    print("🚀 [Settings] 模式: MySQL (生产/本地高性能)")
+    logger.info("[Settings] Database mode: MySQL")
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.mysql',
@@ -69,7 +96,7 @@ if USE_MYSQL:
         }
     }
 else:
-    print("🚗 [Settings] 模式: SQLite3 (便携/服务器零依赖)")
+    logger.info("[Settings] Database mode: SQLite3")
     DATABASES = {
         'default': {
             'ENGINE': 'django.db.backends.sqlite3',
@@ -103,9 +130,9 @@ try:
         alias='default',
         serverSelectionTimeoutMS=2000 
     )
-    print(f"✅ [Settings] MongoDB 连接尝试: {MONGO_HOST}")
+    logger.info("[Settings] MongoDB host: %s", MONGO_HOST)
 except Exception as e:
-    print(f"⚠️ [Settings] MongoDB 连接失败 (LBS功能可能受限): {e}")
+    logger.warning("[Settings] MongoDB connection failed: %s", e)
 
 # --- 🚀 5. 智能缓存配置 (Smart Cache Switch) ---
 REDIS_URL = os.environ.get('REDIS_URL', '')
@@ -117,7 +144,7 @@ except ImportError:
     pass
 
 if HAS_REDIS_LIB and REDIS_URL:
-    print("🚀 [Settings] 缓存: Redis")
+    logger.info("[Settings] Cache backend: Redis")
     CACHES = {
         "default": {
             "BACKEND": "django_redis.cache.RedisCache",
@@ -128,7 +155,7 @@ if HAS_REDIS_LIB and REDIS_URL:
         }
     }
 else:
-    print("🚗 [Settings] 缓存: 本地内存 (LocMemCache)")
+    logger.info("[Settings] Cache backend: LocMemCache")
     CACHES = {
         'default': {
             'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
@@ -189,24 +216,58 @@ MEDIA_ROOT = BASE_DIR / 'media'         # 处理用户头像、帖子图片等�
 
 # --- 🛡️ 7. CSRF 与穿透安全设置 (已修复) ---
 # 必须配置，否则通过 SSH 公网隧道 (8081端口) 访问 Admin 后台会报 403 CSRF 错误
-CSRF_TRUSTED_ORIGINS = [
-    'http://47.93.45.198:8081',
-    'https://47.93.45.198:8081',
+CSRF_TRUSTED_ORIGINS = env_list('CSRF_TRUSTED_ORIGINS', [
     'http://localhost:3000',
     'http://127.0.0.1:3000',
-]
+    'http://localhost:8000',
+    'http://127.0.0.1:8000',
+])
+CSRF_TRUSTED_ORIGINS = list(dict.fromkeys(
+    CSRF_TRUSTED_ORIGINS + [f'http://{host}:8081' for host in PUBLIC_TUNNEL_HOSTS]
+))
 
 # --- 高德地图 ---
 AMAP_WEB_KEY = os.environ.get('AMAP_WEB_KEY', '')
 
-# --- AI 服务配置 (SiliconFlow) ---
-SILICONFLOW_API_KEY = os.environ.get('SILICONFLOW_API_KEY', 'sk-pqovdrehlnwxfmhgmhgifwaaxreddhemoaxmecxbhexgtbuf')
-SILICONFLOW_BASE_URL = "https://api.siliconflow.cn/v1"
-SILICONFLOW_MODEL = "Qwen/Qwen2.5-VL-72B-Instruct" 
+# AI Dynamic Routing Configuration
+# 根据任务类型 (vision/text) 路由到不同的模型供应商
+# -----------------------------------------------------------------------------
+AI_CONFIG = {
+    'vision': {
+        'provider': os.environ.get('AI_VISION_PROVIDER', 'doubao-seed-2-0-pro-260215'),
+        'base_url': os.environ.get('AI_VISION_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3'),
+        'api_key': os.environ.get('AI_VISION_API_KEY', ''),
+        'api_keys': env_list('AI_VISION_API_KEYS', [os.environ.get('AI_VISION_API_KEY', '')]),
+        'model': os.environ.get('AI_VISION_MODEL', 'doubao-seed-2-0-pro-260215'),
+    },
+    'text': {
+        'provider': os.environ.get('AI_TEXT_PROVIDER', 'doubao-seed-2-0-pro-260215'),
+        'base_url': os.environ.get('AI_TEXT_BASE_URL', 'https://ark.cn-beijing.volces.com/api/v3'),
+        'api_key': os.environ.get('AI_TEXT_API_KEY', ''),
+        'api_keys': env_list('AI_TEXT_API_KEYS', [os.environ.get('AI_TEXT_API_KEY', '')]),
+        'model': os.environ.get('AI_TEXT_MODEL', 'doubao-seed-2-0-pro-260215'),
+    },
+    # 降级供应商：当主供应商全部密钥失败时自动切换 (Kimi / Moonshot AI)
+    'fallback': {
+        'provider': 'kimi',
+        'base_url': os.environ.get('AI_FALLBACK_BASE_URL', 'https://api.moonshot.cn/v1'),
+        'api_keys': env_list('AI_FALLBACK_API_KEYS', []),
+        'model': os.environ.get('AI_FALLBACK_MODEL', 'kimi-k2.6'),
+    },
+}
 
 # --- 🚀 CORS 跨域设置 ---
-CORS_ALLOW_ALL_ORIGINS = True 
+CORS_ALLOW_ALL_ORIGINS = env_bool('CORS_ALLOW_ALL_ORIGINS', False)
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = env_list('CORS_ALLOWED_ORIGINS', [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:8000',
+    'http://127.0.0.1:8000',
+])
+CORS_ALLOWED_ORIGINS = list(dict.fromkeys(
+    CORS_ALLOWED_ORIGINS + [f'http://{host}:8081' for host in PUBLIC_TUNNEL_HOSTS]
+))
 
 from corsheaders.defaults import default_headers
 CORS_ALLOW_HEADERS = list(default_headers) + [
